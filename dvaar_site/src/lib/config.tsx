@@ -135,7 +135,7 @@ export const siteConfig = {
     ],
     links: [
       { text: "Pricing", url: "#pricing" },
-      { text: "Documentation", url: "https://docs.dvaar.io" },
+      { text: "Documentation", url: "/docs" },
       { text: "Status", url: "https://status.dvaar.io" },
     ],
     bottomText: "Copyright 2026 Strawberry Labs LLC. All rights reserved.",

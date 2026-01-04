@@ -6,7 +6,7 @@ use axum::{
     extract::{Query, State},
     http::StatusCode,
     response::{IntoResponse, Redirect, Response},
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 use serde::Deserialize;
@@ -18,6 +18,8 @@ pub fn router() -> Router<AppState> {
         .route("/api/auth/github", get(github_redirect))
         .route("/api/auth/github/callback", get(github_callback))
         .route("/api/auth/cli", get(cli_auth))
+        .route("/api/auth/config", get(auth_config))
+        .route("/api/auth/token", post(exchange_token))
         .route("/api/user", get(get_user))
         .route("/api/usage", get(get_usage))
 }
@@ -213,6 +215,61 @@ async fn get_usage(
         "plan": "free",
         "bandwidth_bytes": usage,
         "bandwidth_limit": "unlimited"
+    }))
+    .into_response()
+}
+
+/// Get auth config (public endpoint for CLI)
+async fn auth_config(State(state): State<AppState>) -> Response {
+    Json(serde_json::json!({
+        "github_client_id": state.config.github_client_id
+    }))
+    .into_response()
+}
+
+/// Exchange GitHub access token for Dvaar API token
+#[derive(Debug, Deserialize)]
+struct ExchangeTokenRequest {
+    github_token: String,
+}
+
+async fn exchange_token(
+    State(state): State<AppState>,
+    Json(payload): Json<ExchangeTokenRequest>,
+) -> Response {
+    // Get user email from GitHub using the provided token
+    let email = match get_github_user_email(&payload.github_token).await {
+        Ok(email) => email,
+        Err(e) => {
+            tracing::error!("Failed to get GitHub user email: {}", e);
+            return (StatusCode::UNAUTHORIZED, "Invalid GitHub token").into_response();
+        }
+    };
+
+    // Create or get user
+    let user = match queries::upsert_user(&state.db, &email).await {
+        Ok(user) => user,
+        Err(e) => {
+            tracing::error!("Failed to upsert user: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response();
+        }
+    };
+
+    // Generate API token
+    let api_token = generate_api_token();
+    if let Err(e) = queries::create_api_key(&state.db, user.id, &api_token, Some("CLI")).await {
+        tracing::error!("Failed to create API key: {}", e);
+        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to create API key").into_response();
+    }
+
+    tracing::info!("User logged in via Device Flow: {}", email);
+
+    Json(serde_json::json!({
+        "token": api_token,
+        "user": {
+            "id": user.id.to_string(),
+            "email": user.email
+        }
     }))
     .into_response()
 }

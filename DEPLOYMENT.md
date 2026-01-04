@@ -15,22 +15,25 @@
 
 ## Domain Structure
 
-| Domain | Purpose | Status |
-|--------|---------|--------|
-| **dvaar.io** | Main brand (API, docs, admin, dashboard) | Primary |
-| **dvaar.app** | Tunnel URLs (`*.dvaar.app`) | Primary |
+| Domain | Purpose | Hosted On |
+|--------|---------|-----------|
+| **dvaar.io** | Main site, docs, blog | Vercel |
+| **api.dvaar.io** | API server | Hetzner |
+| **admin.dvaar.io** | Admin panel | Hetzner |
+| **dash.dvaar.io** | User dashboard | Hetzner |
+| **dvaar.app** | Tunnel URLs (`*.dvaar.app`) | Hetzner |
 | dvaar.link | Backup tunnel domain | Reserve |
 | dvaar.to | Backup | Reserve |
 | dvaar.dev | Backup | Reserve |
-| dvaar.cloud | Backup | Reserve |
 
 **URL Examples:**
-- Main site: `https://dvaar.io`
-- API: `https://api.dvaar.io`
-- Admin: `https://admin.dvaar.io`
-- Dashboard: `https://dash.dvaar.io`
-- Docs: `https://docs.dvaar.io`
-- Tunnel: `https://myapp.dvaar.app`
+- Main site: `https://dvaar.io` (Vercel)
+- Docs: `https://dvaar.io/docs` (Vercel)
+- Blog: `https://dvaar.io/blog` (Vercel)
+- API: `https://api.dvaar.io` (Hetzner)
+- Admin: `https://admin.dvaar.io` (Hetzner)
+- Dashboard: `https://dash.dvaar.io` (Hetzner)
+- Tunnel: `https://myapp.dvaar.app` (Hetzner)
 
 ---
 

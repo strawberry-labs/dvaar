@@ -14,7 +14,7 @@ import { IoMenuSharp } from "react-icons/io5";
 
 const navLinks = [
   { href: "https://github.com/strawberry-labs/dvaar", label: "GitHub", external: true },
-  { href: "https://docs.dvaar.io", label: "Docs", external: true },
+  { href: "/docs", label: "Docs", external: false },
   { href: "/blog", label: "Blog", external: false },
 ];
 

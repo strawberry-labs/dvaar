@@ -78,6 +78,7 @@ Complete guide to deploying Dvaar from zero to production.
 - [ ] **Homepage URL**: `https://dvaar.io`
 - [ ] **Application description**: `Secure tunneling service` (optional)
 - [ ] **Authorization callback URL**: `https://api.dvaar.io/api/auth/github/callback`
+- [ ] Check **"Enable Device Flow"** (required for CLI authentication)
 - [ ] Click **"Register application"**
 
 ### 3.3 Save Credentials
@@ -171,14 +172,16 @@ Complete guide to deploying Dvaar from zero to production.
 ### 5.1 Configure dvaar.io DNS Records
 - [ ] Log into your DNS provider (Cloudflare, Namecheap, etc.)
 - [ ] Navigate to DNS settings for `dvaar.io`
-- [ ] Add the following A records:
+- [ ] Add the following records:
 
-| Type | Name | Value | Proxy | TTL |
-|------|------|-------|-------|-----|
-| A | `@` | CONTROL_PLANE_IP | Optional | Auto |
-| A | `api` | CONTROL_PLANE_IP | Optional | Auto |
-| A | `admin` | CONTROL_PLANE_IP | Optional | Auto |
-| A | `dash` | CONTROL_PLANE_IP | Optional | Auto |
+| Type | Name | Value | Proxy | TTL | Notes |
+|------|------|-------|-------|-----|-------|
+| CNAME | `@` | `cname.vercel-dns.com` | OFF | Auto | Main site (Vercel) |
+| A | `api` | CONTROL_PLANE_IP | Optional | Auto | API server |
+| A | `admin` | CONTROL_PLANE_IP | Optional | Auto | Admin panel |
+| A | `dash` | CONTROL_PLANE_IP | Optional | Auto | User dashboard |
+
+> **Note**: Root domain (`dvaar.io`) points to Vercel for the marketing site. Subdomains point to your server. Docs and blog are at `dvaar.io/docs` and `dvaar.io/blog` (handled by Vercel).
 
 ### 5.2 Configure dvaar.app DNS Records
 - [ ] Navigate to DNS settings for `dvaar.app`
@@ -200,6 +203,9 @@ Complete guide to deploying Dvaar from zero to production.
 
   dig test.dvaar.app +short
   # Should return: CONTROL_PLANE_IP
+
+  dig dvaar.io +short
+  # Should return: Vercel IP (76.76.21.21 or similar)
   ```
 
 ---
@@ -396,18 +402,34 @@ Complete guide to deploying Dvaar from zero to production.
   cp target/release/dvaar ~/.local/bin/
   ```
 
-### 10.2 Configure CLI
-- [ ] Login with GitHub
+### 10.2 Test CLI Login (Device Flow)
+- [ ] Run login command
   ```bash
   dvaar login
   ```
 
-- [ ] Start a test tunnel
-  ```bash
-  # Start a local server first
-  python3 -m http.server 8000 &
+- [ ] You should see:
+  ```
+  Authenticating with GitHub...
 
-  # Create tunnel
+  ! First, copy your one-time code: XXXX-XXXX
+
+  Press Enter to open https://github.com/login/device in your browser...
+  ```
+
+- [ ] Press Enter, browser opens to GitHub
+- [ ] Enter the code shown in terminal
+- [ ] Authorize the Dvaar app
+- [ ] Terminal shows: `Logged in as your@email.com`
+
+### 10.3 Test Tunnel
+- [ ] Start a local server
+  ```bash
+  python3 -m http.server 8000 &
+  ```
+
+- [ ] Create tunnel
+  ```bash
   dvaar http 8000
   ```
 
@@ -416,6 +438,46 @@ Complete guide to deploying Dvaar from zero to production.
   # Use the URL printed by dvaar cli
   curl https://YOUR-SUBDOMAIN.dvaar.app
   ```
+
+---
+
+## Phase 11: Vercel Deployment (Marketing Site)
+
+The main site (`dvaar.io`) with docs and blog is deployed separately on Vercel.
+
+### 11.1 Create Vercel Project
+- [ ] Go to [vercel.com](https://vercel.com) and sign in
+- [ ] Click **"Add New..."** → **"Project"**
+- [ ] Import your `dvaar_site` repository (or create one)
+- [ ] Framework Preset: **Next.js**
+- [ ] Click **"Deploy"**
+
+### 11.2 Configure Custom Domain
+- [ ] Go to Project **Settings** → **Domains**
+- [ ] Add domain: `dvaar.io`
+- [ ] Vercel will show you the required DNS records
+- [ ] Verify DNS is configured (from Phase 5.1):
+  ```
+  CNAME @ -> cname.vercel-dns.com
+  ```
+- [ ] Wait for SSL certificate provisioning
+
+### 11.3 Site Structure
+The NextJS site should have these routes:
+
+| Path | Content |
+|------|---------|
+| `/` | Landing page |
+| `/docs` | Documentation (MDX or similar) |
+| `/docs/*` | Individual doc pages |
+| `/blog` | Blog listing |
+| `/blog/*` | Individual blog posts |
+| `/pricing` | Pricing page |
+
+### 11.4 Verify Deployment
+- [ ] Check main site: `https://dvaar.io`
+- [ ] Check docs: `https://dvaar.io/docs`
+- [ ] Check blog: `https://dvaar.io/blog`
 
 ---
 
@@ -438,8 +500,9 @@ Complete guide to deploying Dvaar from zero to production.
 
 ### Monitoring Setup
 - [ ] Set up uptime monitoring for:
-  - https://api.dvaar.io/api/health
-  - https://admin.dvaar.io
+  - https://dvaar.io (Vercel - marketing site)
+  - https://api.dvaar.io/api/health (Hetzner - API)
+  - https://admin.dvaar.io (Hetzner - admin panel)
 
 ---
 
@@ -493,9 +556,10 @@ docker compose logs redis --tail 20
 | Resource | Provider | Cost |
 |----------|----------|------|
 | Control Plane (CPX21) | Hetzner | ~€15/mo |
+| Marketing Site | Vercel | Free (Hobby) |
 | Domain (dvaar.io) | Varies | ~$12/yr |
 | Domain (dvaar.app) | Varies | ~$15/yr |
-| **Total** | | **~€18/mo** |
+| **Total** | | **~€17/mo** |
 
 ---
 
@@ -504,7 +568,7 @@ docker compose logs redis --tail 20
 1. **Add Edge Nodes** - Scale with additional servers in different regions
 2. **Set up monitoring** - Grafana, Prometheus, or simple uptime checks
 3. **Configure Stripe** - Enable paid tiers when ready
-4. **Build landing page** - NextJS site at dvaar.io
+4. **Build dvaar_site** - NextJS marketing site with docs/blog at dvaar.io
 5. **Documentation** - API docs at dvaar.io/docs
 
 ---

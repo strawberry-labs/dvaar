@@ -1,13 +1,8 @@
 # =============================================================================
 # Dvaar Caddy Configuration
-# BASE_DOMAIN: dvaar.io (main site, API, admin, dashboard)
+# BASE_DOMAIN: dvaar.io (main site on Vercel, API/admin/dash on this server)
 # TUNNEL_DOMAIN: dvaar.app (user tunnel URLs)
 # =============================================================================
-
-# Main site + API (dvaar.io)
-{$BASE_DOMAIN:dvaar.io} {
-    reverse_proxy dvaar:8080
-}
 
 # API endpoint (api.dvaar.io)
 api.{$BASE_DOMAIN:dvaar.io} {

@@ -316,4 +316,4 @@ MIT License. See [LICENSE](./LICENSE) for details.
 
 **Dvaar** — The gateway to your localhost.
 
-[Website](https://dvaar.io) · [Documentation](https://docs.dvaar.io) · [Status](https://status.dvaar.io)
+[Website](https://dvaar.io) · [Documentation](https://dvaar.io/docs) · [Status](https://status.dvaar.io)
