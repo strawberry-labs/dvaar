@@ -1,0 +1,46 @@
+# =============================================================================
+# Dvaar Caddy Configuration
+# BASE_DOMAIN: dvaar.io (API, admin, docs, dashboard)
+# TUNNEL_DOMAIN: dvaar.app (user tunnel URLs)
+# =============================================================================
+
+# API endpoint (api.dvaar.io)
+api.{$BASE_DOMAIN:dvaar.io} {
+    reverse_proxy dvaar:8080
+}
+
+# Admin panel (admin.dvaar.io)
+admin.{$BASE_DOMAIN:dvaar.io} {
+    reverse_proxy dvaar:8080
+}
+
+# User dashboard (dash.dvaar.io)
+dash.{$BASE_DOMAIN:dvaar.io} {
+    reverse_proxy dvaar:8080
+}
+
+# Documentation (docs.dvaar.io) - static site or proxy
+docs.{$BASE_DOMAIN:dvaar.io} {
+    # For now, proxy to main server (can be changed to static files later)
+    reverse_proxy dvaar:8080
+}
+
+# Wildcard for tunnel subdomains (*.dvaar.app)
+*.{$TUNNEL_DOMAIN:dvaar.app} {
+    reverse_proxy dvaar:8080
+}
+
+# Root tunnel domain redirect (dvaar.app -> dvaar.io)
+{$TUNNEL_DOMAIN:dvaar.app} {
+    redir https://{$BASE_DOMAIN:dvaar.io}{uri} permanent
+}
+
+# Root base domain redirect (dvaar.io -> www.dvaar.io or landing page)
+{$BASE_DOMAIN:dvaar.io} {
+    redir https://www.{$BASE_DOMAIN:dvaar.io}{uri} permanent
+}
+
+# WWW subdomain (www.dvaar.io - landing page)
+www.{$BASE_DOMAIN:dvaar.io} {
+    reverse_proxy dvaar:8080
+}

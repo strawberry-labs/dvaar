@@ -1,0 +1,82 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: dvaar-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: dvaar
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: dvaar
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dvaar"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: dvaar-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  dvaar:
+    image: ghcr.io/${GITHUB_REPO:-dvaar/dvaar}:${VERSION:-latest}
+    container_name: dvaar-server
+    restart: unless-stopped
+    ports:
+      - "8080:8080"   # Public API/WebSocket
+      - "6000:6000"   # Internal node-to-node
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8080
+      INTERNAL_PORT: 6000
+      BASE_DOMAIN: ${BASE_DOMAIN:-dvaar.io}
+      TUNNEL_DOMAIN: ${TUNNEL_DOMAIN:-dvaar.app}
+      PUBLIC_URL: ${PUBLIC_URL:-https://api.dvaar.io}
+      NODE_IP: ${NODE_IP:-127.0.0.1}
+      CLUSTER_SECRET: ${CLUSTER_SECRET}
+      DATABASE_URL: postgres://dvaar:${POSTGRES_PASSWORD:-changeme}@postgres:5432/dvaar
+      REDIS_URL: redis://redis:6379
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET}
+      ADMIN_TOKEN: ${ADMIN_TOKEN}
+      RUST_LOG: info,dvaar_server=debug
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: dvaar-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      BASE_DOMAIN: ${BASE_DOMAIN:-dvaar.io}
+      TUNNEL_DOMAIN: ${TUNNEL_DOMAIN:-dvaar.app}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - dvaar
+
+volumes:
+  postgres_data:
+  redis_data:
+  caddy_data:
+  caddy_config:

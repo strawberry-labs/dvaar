@@ -1,0 +1,33 @@
+# Build artifacts
+/target
+**/target
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Environment files (contains secrets)
+.env
+.env.local
+.env.production
+
+# Logs
+*.log
+logs/
+
+# Database
+*.db
+*.sqlite
+
+# OS
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.bak
+
+# Local config that shouldn't be committed
+/opt/dvaar/
