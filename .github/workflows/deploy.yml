@@ -67,6 +67,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Copy files to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.CONTROL_PLANE_HOST }}
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: "docker/docker-compose.yml,docker/Caddyfile"
+          target: "/opt/dvaar"
+          strip_components: 1
+
       - name: Deploy to Control Plane
         uses: appleboy/ssh-action@v1.0.3
         with:
