@@ -15,6 +15,11 @@ const installCommands = [
     command: "curl -sSL https://dvaar.io/install | bash",
   },
   {
+    id: "npm",
+    label: "npm",
+    command: "npm install -g dvaar",
+  },
+  {
     id: "brew",
     label: "brew",
     command: "brew install dvaar-io/tap/dvaar",

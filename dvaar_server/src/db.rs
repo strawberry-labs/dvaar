@@ -23,8 +23,18 @@ pub struct User {
     pub id: Uuid,
     pub email: String,
     pub stripe_customer_id: Option<String>,
+    pub plan: String,
+    pub stripe_subscription_id: Option<String>,
+    pub plan_expires_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+impl User {
+    /// Check if user has a paid plan
+    pub fn is_paid(&self) -> bool {
+        self.plan != "free"
+    }
 }
 
 /// API key model
@@ -74,7 +84,8 @@ pub mod queries {
     pub async fn find_user_by_token(pool: &PgPool, token: &str) -> Result<Option<User>, sqlx::Error> {
         let result = sqlx::query_as::<_, User>(
             r#"
-            SELECT u.id, u.email, u.stripe_customer_id, u.created_at, u.updated_at
+            SELECT u.id, u.email, u.stripe_customer_id, u.plan, u.stripe_subscription_id,
+                   u.plan_expires_at, u.created_at, u.updated_at
             FROM users u
             INNER JOIN api_keys ak ON ak.user_id = u.id
             WHERE ak.token = $1
@@ -98,7 +109,8 @@ pub mod queries {
     /// Find a user by ID
     pub async fn find_user_by_id(pool: &PgPool, id: Uuid) -> Result<Option<User>, sqlx::Error> {
         sqlx::query_as::<_, User>(
-            "SELECT id, email, stripe_customer_id, created_at, updated_at FROM users WHERE id = $1",
+            r#"SELECT id, email, stripe_customer_id, plan, stripe_subscription_id,
+                      plan_expires_at, created_at, updated_at FROM users WHERE id = $1"#,
         )
         .bind(id)
         .fetch_optional(pool)
@@ -108,9 +120,21 @@ pub mod queries {
     /// Find a user by email
     pub async fn find_user_by_email(pool: &PgPool, email: &str) -> Result<Option<User>, sqlx::Error> {
         sqlx::query_as::<_, User>(
-            "SELECT id, email, stripe_customer_id, created_at, updated_at FROM users WHERE email = $1",
+            r#"SELECT id, email, stripe_customer_id, plan, stripe_subscription_id,
+                      plan_expires_at, created_at, updated_at FROM users WHERE email = $1"#,
         )
         .bind(email)
+        .fetch_optional(pool)
+        .await
+    }
+
+    /// Find a user by Stripe customer ID
+    pub async fn find_user_by_stripe_customer(pool: &PgPool, customer_id: &str) -> Result<Option<User>, sqlx::Error> {
+        sqlx::query_as::<_, User>(
+            r#"SELECT id, email, stripe_customer_id, plan, stripe_subscription_id,
+                      plan_expires_at, created_at, updated_at FROM users WHERE stripe_customer_id = $1"#,
+        )
+        .bind(customer_id)
         .fetch_optional(pool)
         .await
     }
@@ -121,7 +145,8 @@ pub mod queries {
             r#"
             INSERT INTO users (email)
             VALUES ($1)
-            RETURNING id, email, stripe_customer_id, created_at, updated_at
+            RETURNING id, email, stripe_customer_id, plan, stripe_subscription_id,
+                      plan_expires_at, created_at, updated_at
             "#,
         )
         .bind(email)
@@ -136,12 +161,43 @@ pub mod queries {
             INSERT INTO users (email)
             VALUES ($1)
             ON CONFLICT (email) DO UPDATE SET updated_at = NOW()
-            RETURNING id, email, stripe_customer_id, created_at, updated_at
+            RETURNING id, email, stripe_customer_id, plan, stripe_subscription_id,
+                      plan_expires_at, created_at, updated_at
             "#,
         )
         .bind(email)
         .fetch_one(pool)
         .await
+    }
+
+    /// Update user's Stripe customer ID
+    pub async fn update_stripe_customer(pool: &PgPool, user_id: Uuid, customer_id: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE users SET stripe_customer_id = $1 WHERE id = $2")
+            .bind(customer_id)
+            .bind(user_id)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Update user's subscription and plan
+    pub async fn update_user_subscription(
+        pool: &PgPool,
+        user_id: Uuid,
+        plan: &str,
+        subscription_id: Option<&str>,
+        expires_at: Option<DateTime<Utc>>,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            r#"UPDATE users SET plan = $1, stripe_subscription_id = $2, plan_expires_at = $3 WHERE id = $4"#
+        )
+            .bind(plan)
+            .bind(subscription_id)
+            .bind(expires_at)
+            .bind(user_id)
+            .execute(pool)
+            .await?;
+        Ok(())
     }
 
     /// Create an API key for a user

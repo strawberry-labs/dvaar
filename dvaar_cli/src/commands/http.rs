@@ -4,6 +4,7 @@ use crate::config::{generate_session_id, logs_dir, Config, Session, Sessions};
 use crate::tunnel::client::TunnelClient;
 use anyhow::{Context, Result};
 use chrono::Utc;
+use console::style;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -33,20 +34,25 @@ pub async fn run(opts: HttpOptions) -> Result<()> {
     }
 
     // Start static file server if needed
-    let _static_server = if let Some(dir) = static_dir {
-        Some(start_static_server(dir).await?)
+    let _static_server = if let Some(ref dir) = static_dir {
+        let server = start_static_server(dir.clone()).await?;
+        Some(server)
     } else {
         None
     };
 
-    // Connect to tunnel server
-    println!("Connecting to Dvaar...");
+    // Use static server address if we started one
+    let actual_target = if let Some(ref server) = _static_server {
+        format!("localhost:{}", server.addr.port())
+    } else {
+        target_addr
+    };
 
     let mut client = TunnelClient::new(
         &config.websocket_url(),
         token,
         opts.domain.clone(),
-        target_addr.clone(),
+        actual_target.clone(),
     );
 
     // Handle basic auth if provided
@@ -62,11 +68,11 @@ pub async fn run(opts: HttpOptions) -> Result<()> {
     // Set TLS mode
     client.set_upstream_tls(opts.use_tls);
 
-    // Run the tunnel
+    // Run the tunnel (this now uses cliclack internally)
     let result = client.run().await;
 
     if let Err(e) = result {
-        eprintln!("Tunnel error: {}", e);
+        cliclack::outro_cancel(format!("Tunnel error: {}", e))?;
     }
 
     Ok(())
@@ -111,7 +117,11 @@ async fn start_static_server(dir: PathBuf) -> Result<StaticServer> {
         axum::serve(listener, app).await.ok();
     });
 
-    println!("Serving static files from {:?} on {}", dir, addr);
+    cliclack::log::info(format!(
+        "Serving static files from {} on {}",
+        style(dir.display()).cyan(),
+        style(addr).green()
+    ))?;
 
     Ok(StaticServer { addr, _handle: handle })
 }
@@ -123,6 +133,13 @@ struct StaticServer {
 
 /// Spawn as background process
 async fn spawn_background(opts: HttpOptions) -> Result<()> {
+    use cliclack::{intro, outro, note};
+
+    intro(style(" dvaar ").on_cyan().black().to_string())?;
+
+    let spinner = cliclack::spinner();
+    spinner.start("Starting background tunnel...");
+
     let session_id = generate_session_id();
     let log_file = logs_dir().join(format!("{}.log", session_id));
 
@@ -187,13 +204,24 @@ async fn spawn_background(opts: HttpOptions) -> Result<()> {
     let mut sessions = Sessions::load()?;
     sessions.add(session)?;
 
-    println!("Started background tunnel:");
-    println!("  ID:     {}", session_id);
-    println!("  URL:    {}", url);
-    println!("  Target: {}", opts.target);
-    println!();
-    println!("Use `dvaar logs {}` to view logs", session_id);
-    println!("Use `dvaar stop {}` to stop", session_id);
+    spinner.stop("Background tunnel started");
+
+    // Display session info
+    let info = format!(
+        "{} {}\n{} {}\n{} {}",
+        style("ID:").dim(),
+        style(&session_id).cyan(),
+        style("URL:").dim(),
+        style(&url).green().bold(),
+        style("Target:").dim(),
+        style(&opts.target).white(),
+    );
+    note("Tunnel Info", &info)?;
+
+    cliclack::log::info(format!("View logs: {}", style(format!("dvaar logs {}", session_id)).cyan()))?;
+    cliclack::log::info(format!("Stop tunnel: {}", style(format!("dvaar stop {}", session_id)).cyan()))?;
+
+    outro("Running in background")?;
 
     Ok(())
 }

@@ -12,6 +12,7 @@
 mod commands;
 mod config;
 mod tunnel;
+mod update;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -88,7 +89,11 @@ enum Commands {
     Usage,
 
     /// Upgrade your plan
-    Upgrade,
+    Upgrade {
+        /// Plan to upgrade to (hobby or pro)
+        #[arg(value_parser = ["hobby", "pro"])]
+        plan: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -107,6 +112,9 @@ async fn main() -> Result<()> {
 
     // Ensure config directories exist
     config::ensure_dirs()?;
+
+    // Check for updates (non-blocking)
+    update::check_for_updates().await;
 
     // Handle commands
     match cli.command {
@@ -149,8 +157,8 @@ async fn main() -> Result<()> {
             commands::billing::usage().await?;
         }
 
-        Commands::Upgrade => {
-            commands::billing::upgrade().await?;
+        Commands::Upgrade { plan } => {
+            commands::billing::upgrade(plan).await?;
         }
     }
 

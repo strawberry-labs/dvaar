@@ -14,11 +14,14 @@ const featureOptions: FeatureOption[] = [
     id: 1,
     title: "Quick Start",
     description: "Expose your local server to the internet with one command.",
-    code: `# Install Dvaar
-curl -sSL https://dvaar.io/install.sh | bash
+    code: `# Install Dvaar (choose your method)
+curl -sSL https://dvaar.io/install | bash  # macOS/Linux
+npm install -g dvaar                         # npm
 
-# Login with GitHub
+# Login with GitHub (uses Device Flow)
 dvaar login
+# ! First, copy your one-time code: ABCD-1234
+# Press Enter to open github.com/login/device
 
 # Expose port 3000 to the internet
 dvaar http 3000
@@ -34,12 +37,13 @@ dvaar http 3000
 dvaar http 3000 --domain myapp
 # => https://myapp.dvaar.app
 
-# Use your own domain via CNAME
-dvaar http 3000 --domain myapp --custom-domain api.example.com
-# => https://api.example.com
-
+# Use your own domain via CNAME (Hobby+ plan)
 # First, add CNAME record:
-# api.example.com CNAME myapp.dvaar.app`,
+# api.example.com CNAME myapp.dvaar.app
+
+# Then run with your custom subdomain
+dvaar http 3000 --domain myapp
+# Access via: https://api.example.com`,
   },
   {
     id: 3,
@@ -81,7 +85,11 @@ dvaar http 3000 --use-tls
 
 # Check your bandwidth usage
 dvaar usage
-# This month: 2.5 GB / 100 GB`,
+# Plan: Free | Used: 2.5 GB
+
+# Upgrade your plan
+dvaar upgrade
+# Or: dvaar upgrade hobby`,
   },
 ];
 

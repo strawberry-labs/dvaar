@@ -1,0 +1,242 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            name: dvaar-linux-x64
+
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            name: dvaar-linux-arm64
+            cross: true
+
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            name: dvaar-darwin-x64
+
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            name: dvaar-darwin-arm64
+
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            name: dvaar-windows-x64
+            ext: .exe
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build (cross)
+        if: matrix.cross
+        run: cross build --release --target ${{ matrix.target }} --bin dvaar
+
+      - name: Build (native)
+        if: "!matrix.cross"
+        run: cargo build --release --target ${{ matrix.target }} --bin dvaar
+
+      - name: Package (Unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/dvaar dist/dvaar
+          cd dist
+          tar -czvf ${{ matrix.name }}.tar.gz dvaar
+          rm dvaar
+
+      - name: Package (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist
+          Copy-Item "target/${{ matrix.target }}/release/dvaar.exe" "dist/dvaar.exe"
+          Compress-Archive -Path "dist/dvaar.exe" -DestinationPath "dist/${{ matrix.name }}.zip"
+          Remove-Item "dist/dvaar.exe"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: dist/*
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" \) -exec mv {} release/ \;
+          ls -la release/
+
+      - name: Generate checksums
+        run: |
+          cd release
+          sha256sum * > checksums.txt
+          cat checksums.txt
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          draft: false
+          prerelease: ${{ contains(github.ref, '-') }}
+          files: |
+            release/*
+          generate_release_notes: true
+
+  publish-npm:
+    name: Publish to npm
+    needs: release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Update version
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          cd packages/dvaar-cli
+          npm version $VERSION --no-git-tag-version
+
+      - name: Publish
+        run: |
+          cd packages/dvaar-cli
+          npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  publish-crates:
+    name: Publish to crates.io
+    needs: release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Publish dvaar_common
+        run: cargo publish -p dvaar_common --token ${{ secrets.CRATES_IO_TOKEN }}
+        continue-on-error: true
+
+      - name: Publish dvaar (CLI)
+        run: |
+          sleep 30  # Wait for dvaar_common to be indexed
+          cargo publish -p dvaar_cli --token ${{ secrets.CRATES_IO_TOKEN }}
+        continue-on-error: true
+
+  update-homebrew:
+    name: Update Homebrew Formula
+    needs: release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout tap repo
+        uses: actions/checkout@v4
+        with:
+          repository: dvaar/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Download release assets
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          curl -sSL "https://github.com/strawberry-labs/dvaar/releases/download/v${VERSION}/dvaar-darwin-x64.tar.gz" -o darwin-x64.tar.gz
+          curl -sSL "https://github.com/strawberry-labs/dvaar/releases/download/v${VERSION}/dvaar-darwin-arm64.tar.gz" -o darwin-arm64.tar.gz
+          curl -sSL "https://github.com/strawberry-labs/dvaar/releases/download/v${VERSION}/dvaar-linux-x64.tar.gz" -o linux-x64.tar.gz
+
+      - name: Calculate checksums
+        id: checksums
+        run: |
+          echo "darwin_x64=$(sha256sum darwin-x64.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+          echo "darwin_arm64=$(sha256sum darwin-arm64.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+          echo "linux_x64=$(sha256sum linux-x64.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+
+      - name: Update formula
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          cat > homebrew-tap/Formula/dvaar.rb << EOF
+          class Dvaar < Formula
+            desc "Expose your localhost to the internet"
+            homepage "https://dvaar.io"
+            version "${VERSION}"
+            license "MIT"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "https://github.com/strawberry-labs/dvaar/releases/download/v${VERSION}/dvaar-darwin-arm64.tar.gz"
+                sha256 "${{ steps.checksums.outputs.darwin_arm64 }}"
+              else
+                url "https://github.com/strawberry-labs/dvaar/releases/download/v${VERSION}/dvaar-darwin-x64.tar.gz"
+                sha256 "${{ steps.checksums.outputs.darwin_x64 }}"
+              end
+            end
+
+            on_linux do
+              url "https://github.com/strawberry-labs/dvaar/releases/download/v${VERSION}/dvaar-linux-x64.tar.gz"
+              sha256 "${{ steps.checksums.outputs.linux_x64 }}"
+            end
+
+            def install
+              bin.install "dvaar"
+            end
+
+            test do
+              system "#{bin}/dvaar", "--version"
+            end
+          end
+          EOF
+
+      - name: Commit and push
+        run: |
+          cd homebrew-tap
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add Formula/dvaar.rb
+          git commit -m "Update dvaar to ${GITHUB_REF#refs/tags/v}"
+          git push

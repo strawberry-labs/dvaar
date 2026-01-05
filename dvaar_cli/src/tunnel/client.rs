@@ -1,11 +1,12 @@
 //! WebSocket tunnel client
 
 use anyhow::{Context, Result};
+use console::style;
 use dvaar_common::{
     constants, ClientHello, ControlPacket, HttpRequestPacket, HttpResponsePacket, TunnelType,
 };
 use futures_util::{SinkExt, StreamExt};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
 use tokio_tungstenite::{
     connect_async,
@@ -56,13 +57,20 @@ impl TunnelClient {
 
     /// Run the tunnel client
     pub async fn run(&mut self) -> Result<()> {
+        use cliclack::{intro, outro_cancel, note};
+
         let url = format!("{}/_dvaar/tunnel", self.server_url);
 
-        println!("Connecting to {}...", url);
+        intro(style(" dvaar ").on_cyan().black().to_string())?;
+
+        let spinner = cliclack::spinner();
+        spinner.start("Connecting to tunnel server...");
 
         let (ws_stream, _) = connect_async(&url)
             .await
             .context("Failed to connect to tunnel server")?;
+
+        spinner.stop("Connected to server");
 
         let (mut write, mut read) = ws_stream.split();
 
@@ -97,16 +105,29 @@ impl TunnelClient {
         };
 
         if let Some(error) = server_hello.error {
+            outro_cancel(format!("Server error: {}", error))?;
             anyhow::bail!("Server error: {}", error);
         }
 
+        // Display tunnel info
+        let public_url = format!("https://{}", server_hello.assigned_domain);
+        let tunnel_info = format!(
+            "{} {} {}\n{} {} {}",
+            style("Public URL:").dim(),
+            style(&public_url).green().bold(),
+            style("").dim(),
+            style("Forwarding:").dim(),
+            style(self.format_upstream()).cyan(),
+            style("").dim(),
+        );
+        note("Tunnel Active", &tunnel_info)?;
+
         println!();
-        println!("Tunnel established!");
-        println!();
-        println!("Public URL:     https://{}", server_hello.assigned_domain);
-        println!("Forwarding to:  {}", self.format_upstream());
-        println!();
-        println!("Press Ctrl+C to stop");
+        println!(
+            "{}  {}",
+            style("◆").green(),
+            style("Waiting for requests... (Ctrl+C to stop)").dim()
+        );
         println!();
 
         // Start bidirectional communication
@@ -233,10 +254,11 @@ impl TunnelClient {
         basic_auth: Option<&str>,
         host_header: Option<&str>,
     ) -> HttpResponsePacket {
+        let start_time = Instant::now();
         let scheme = if upstream_tls { "https" } else { "http" };
         let url = format!("{}://{}{}", scheme, upstream_addr, request.uri);
 
-        tracing::info!("{} {}", request.method, url);
+        tracing::debug!("{} {}", request.method, url);
 
         let method = reqwest::Method::from_bytes(request.method.as_bytes())
             .unwrap_or(reqwest::Method::GET);
@@ -283,6 +305,7 @@ impl TunnelClient {
         // Send request
         match req_builder.send().await {
             Ok(response) => {
+                let elapsed = start_time.elapsed();
                 let status = response.status().as_u16();
                 let headers: Vec<(String, String)> = response
                     .headers()
@@ -293,6 +316,10 @@ impl TunnelClient {
                     .collect();
 
                 let body = response.bytes().await.unwrap_or_default().to_vec();
+                let body_size = body.len();
+
+                // Pretty print the request log
+                self.log_request(&request.method, &request.uri, status, elapsed, body_size);
 
                 HttpResponsePacket {
                     stream_id: request.stream_id,
@@ -302,7 +329,12 @@ impl TunnelClient {
                 }
             }
             Err(e) => {
+                let elapsed = start_time.elapsed();
                 tracing::error!("Upstream request failed: {}", e);
+
+                // Log the failed request
+                self.log_request(&request.method, &request.uri, 502, elapsed, 0);
+
                 HttpResponsePacket {
                     stream_id: request.stream_id,
                     status: 502,
@@ -311,5 +343,78 @@ impl TunnelClient {
                 }
             }
         }
+    }
+
+    /// Pretty print a request log line
+    fn log_request(&self, method: &str, uri: &str, status: u16, elapsed: Duration, body_size: usize) {
+        use chrono::Local;
+
+        let now = Local::now();
+        let timestamp = style(now.format("%H:%M:%S").to_string()).dim();
+
+        // Method styling
+        let method_styled = match method {
+            "GET" => style(format!("{:>7}", method)).green(),
+            "POST" => style(format!("{:>7}", method)).yellow(),
+            "PUT" => style(format!("{:>7}", method)).blue(),
+            "PATCH" => style(format!("{:>7}", method)).magenta(),
+            "DELETE" => style(format!("{:>7}", method)).red(),
+            "HEAD" => style(format!("{:>7}", method)).cyan(),
+            "OPTIONS" => style(format!("{:>7}", method)).white(),
+            _ => style(format!("{:>7}", method)).white(),
+        };
+
+        // Status code styling
+        let status_styled = if status >= 500 {
+            style(status.to_string()).red().bold()
+        } else if status >= 400 {
+            style(status.to_string()).yellow()
+        } else if status >= 300 {
+            style(status.to_string()).cyan()
+        } else if status >= 200 {
+            style(status.to_string()).green()
+        } else {
+            style(status.to_string()).white()
+        };
+
+        // Duration styling
+        let elapsed_ms = elapsed.as_millis();
+        let duration_styled = if elapsed_ms > 1000 {
+            style(format!("{:>6}ms", elapsed_ms)).red()
+        } else if elapsed_ms > 500 {
+            style(format!("{:>6}ms", elapsed_ms)).yellow()
+        } else if elapsed_ms > 100 {
+            style(format!("{:>6}ms", elapsed_ms)).white()
+        } else {
+            style(format!("{:>6}ms", elapsed_ms)).green()
+        };
+
+        // Size formatting
+        let size_str = if body_size >= 1_000_000 {
+            format!("{:.1}MB", body_size as f64 / 1_000_000.0)
+        } else if body_size >= 1_000 {
+            format!("{:.1}KB", body_size as f64 / 1_000.0)
+        } else {
+            format!("{}B", body_size)
+        };
+        let size_styled = style(format!("{:>8}", size_str)).dim();
+
+        // Truncate URI if too long
+        let max_uri_len = 50;
+        let uri_display = if uri.len() > max_uri_len {
+            format!("{}...", &uri[..max_uri_len - 3])
+        } else {
+            uri.to_string()
+        };
+
+        println!(
+            "  {} {} {} {} {} {}",
+            timestamp,
+            method_styled,
+            style(uri_display).white(),
+            status_styled,
+            duration_styled,
+            size_styled,
+        );
     }
 }

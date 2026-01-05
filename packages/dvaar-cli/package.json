@@ -1,0 +1,48 @@
+{
+  "name": "dvaar",
+  "version": "0.1.0",
+  "description": "Fast, secure tunneling for developers. Expose localhost to the internet with custom subdomains and HTTPS. Drop-in replacement for ngrok.",
+  "keywords": [
+    "tunnel",
+    "localhost",
+    "ngrok",
+    "ngrok-alternative",
+    "http",
+    "https",
+    "proxy",
+    "webhook",
+    "development",
+    "devtools",
+    "expose",
+    "public-url",
+    "subdomain",
+    "websocket",
+    "cli"
+  ],
+  "homepage": "https://dvaar.io",
+  "bugs": {
+    "url": "https://github.com/strawberry-labs/dvaar/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/strawberry-labs/dvaar.git",
+    "directory": "packages/dvaar-cli"
+  },
+  "license": "MIT",
+  "author": "Strawberry Labs <support@dvaar.io>",
+  "bin": {
+    "dvaar": "./bin/run.js"
+  },
+  "files": [
+    "bin",
+    "scripts",
+    "README.md"
+  ],
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js",
+    "preuninstall": "node scripts/preuninstall.js"
+  },
+  "engines": {
+    "node": ">=16"
+  }
+}

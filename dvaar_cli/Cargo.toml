@@ -48,3 +48,7 @@ http = { workspace = true }
 
 # Process management
 nix = { version = "0.29", features = ["signal", "process"] }
+
+# Interactive prompts & beautiful CLI
+cliclack = "0.3"
+console = "0.15"

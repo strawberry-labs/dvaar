@@ -2,6 +2,7 @@
 
 pub mod admin;
 pub mod auth;
+pub mod billing;
 pub mod ingress;
 pub mod proxy;
 pub mod tunnel;

@@ -481,6 +481,140 @@ The NextJS site should have these routes:
 
 ---
 
+## Phase 12: Stripe Integration
+
+### 12.1 Create Stripe Account
+- [ ] Go to [dashboard.stripe.com](https://dashboard.stripe.com)
+- [ ] Sign up or log in
+- [ ] Complete business verification (required for live mode)
+
+### 12.2 Create Products and Prices
+- [ ] Go to **Products** → **Add product**
+- [ ] Create **Hobby** product:
+  - Name: `Hobby`
+  - Description: `For developers who need custom domains`
+  - Price: `$5/month` (recurring)
+  - Click **Save product**
+  - Copy the **Price ID** (starts with `price_`)
+    ```
+    STRIPE_HOBBY_PRICE_ID=price_xxxxxxxxxxxxxxxxxx
+    ```
+
+- [ ] Create **Pro** product:
+  - Name: `Pro`
+  - Description: `For teams and production workloads`
+  - Price: `$15/month` (recurring)
+  - Click **Save product**
+  - Copy the **Price ID**
+    ```
+    STRIPE_PRO_PRICE_ID=price_xxxxxxxxxxxxxxxxxx
+    ```
+
+### 12.3 Get API Keys
+- [ ] Go to **Developers** → **API keys**
+- [ ] Copy **Secret key** (starts with `sk_live_` or `sk_test_`)
+  ```
+  STRIPE_SECRET_KEY=sk_live_xxxxxxxxxxxxxxxxxx
+  ```
+
+> **Note**: Use `sk_test_` keys for testing, `sk_live_` for production.
+
+### 12.4 Configure Webhook
+- [ ] Go to **Developers** → **Webhooks**
+- [ ] Click **Add endpoint**
+- [ ] Endpoint URL: `https://api.dvaar.io/api/billing/webhook`
+- [ ] Select events to listen for:
+  - `checkout.session.completed`
+  - `customer.subscription.updated`
+  - `customer.subscription.deleted`
+  - `invoice.payment_failed`
+- [ ] Click **Add endpoint**
+- [ ] Click on the endpoint → **Reveal** signing secret
+- [ ] Copy **Signing secret** (starts with `whsec_`)
+  ```
+  STRIPE_WEBHOOK_SECRET=whsec_xxxxxxxxxxxxxxxxxx
+  ```
+
+### 12.5 Configure Customer Portal
+- [ ] Go to **Settings** → **Billing** → **Customer portal**
+- [ ] Enable the portal
+- [ ] Configure allowed actions:
+  - [x] Allow customers to update subscriptions
+  - [x] Allow customers to cancel subscriptions
+  - [x] Allow customers to update payment methods
+- [ ] Click **Save**
+
+### 12.6 Add Stripe Secrets to Server
+- [ ] SSH into server
+  ```bash
+  ssh root@CONTROL_PLANE_IP
+  ```
+
+- [ ] Edit environment file
+  ```bash
+  nano /opt/dvaar/.env
+  ```
+
+- [ ] Add Stripe configuration:
+  ```bash
+  STRIPE_SECRET_KEY=sk_live_xxxxxxxxxxxxxxxxxx
+  STRIPE_WEBHOOK_SECRET=whsec_xxxxxxxxxxxxxxxxxx
+  STRIPE_HOBBY_PRICE_ID=price_xxxxxxxxxxxxxxxxxx
+  STRIPE_PRO_PRICE_ID=price_xxxxxxxxxxxxxxxxxx
+  ```
+
+- [ ] Save and exit (Ctrl+X, Y, Enter)
+
+- [ ] Restart the server
+  ```bash
+  cd /opt/dvaar
+  docker compose restart dvaar
+  ```
+
+### 12.7 Verify Stripe Integration
+- [ ] Test webhook endpoint
+  ```bash
+  curl -X POST https://api.dvaar.io/api/billing/webhook \
+    -H "Content-Type: application/json" \
+    -d '{}'
+  # Should return 400 "Missing signature" (correct - signature required)
+  ```
+
+- [ ] Test plans endpoint
+  ```bash
+  curl https://api.dvaar.io/api/billing/plans | jq
+  ```
+  Expected output:
+  ```json
+  {
+    "plans": [
+      {"id": "free", "name": "Free", "price": 0, ...},
+      {"id": "hobby", "name": "Hobby", "price": 5, ...},
+      {"id": "pro", "name": "Pro", "price": 15, ...}
+    ]
+  }
+  ```
+
+- [ ] Test checkout flow via CLI
+  ```bash
+  dvaar upgrade hobby
+  # Should open Stripe checkout page in browser
+  ```
+
+### 12.8 Test Webhook (Stripe CLI - Optional)
+- [ ] Install Stripe CLI: [stripe.com/docs/stripe-cli](https://stripe.com/docs/stripe-cli)
+- [ ] Login: `stripe login`
+- [ ] Forward webhooks to local:
+  ```bash
+  stripe listen --forward-to localhost:3000/api/billing/webhook
+  ```
+- [ ] Trigger test event:
+  ```bash
+  stripe trigger checkout.session.completed
+  ```
+
+---
+
 ## Post-Deployment Checklist
 
 ### Security Hardening
@@ -496,6 +630,10 @@ The NextJS site should have these routes:
   - ADMIN_TOKEN
   - GITHUB_CLIENT_ID
   - GITHUB_CLIENT_SECRET
+  - STRIPE_SECRET_KEY
+  - STRIPE_WEBHOOK_SECRET
+  - STRIPE_HOBBY_PRICE_ID
+  - STRIPE_PRO_PRICE_ID
   - SSH private key
 
 ### Monitoring Setup
@@ -567,9 +705,9 @@ docker compose logs redis --tail 20
 
 1. **Add Edge Nodes** - Scale with additional servers in different regions
 2. **Set up monitoring** - Grafana, Prometheus, or simple uptime checks
-3. **Configure Stripe** - Enable paid tiers when ready
-4. **Build dvaar_site** - NextJS marketing site with docs/blog at dvaar.io
-5. **Documentation** - API docs at dvaar.io/docs
+3. **Documentation** - API docs at dvaar.io/docs
+4. **Email notifications** - Set up transactional emails for billing events
+5. **Analytics** - Add usage analytics and dashboards
 
 ---
 

@@ -2,11 +2,30 @@
 
 use crate::config::Config;
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Serialize)]
+struct CheckoutRequest {
+    plan: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CheckoutResponse {
+    checkout_url: String,
+}
+
 
 /// Show usage statistics
 pub async fn usage() -> Result<()> {
+    use cliclack::{intro, outro, log};
+
     let config = Config::load()?;
     let token = config.require_auth()?;
+
+    intro("dvaar usage")?;
+
+    let spinner = cliclack::spinner();
+    spinner.start("Fetching usage data...");
 
     let client = reqwest::Client::new();
     let response = client
@@ -18,39 +37,113 @@ pub async fn usage() -> Result<()> {
     if !response.status().is_success() {
         let status = response.status();
         let text = response.text().await.unwrap_or_default();
-        anyhow::bail!("Failed to fetch usage: {} - {}", status, text);
+        spinner.error(format!("Failed to fetch usage: {} - {}", status, text));
+        return Ok(());
     }
 
     let data: serde_json::Value = response.json().await?;
+    spinner.stop("Usage data retrieved");
 
     let plan = data["plan"].as_str().unwrap_or("free");
     let bandwidth = data["bandwidth_bytes"].as_u64().unwrap_or(0);
     let limit = data["bandwidth_limit"].as_str().unwrap_or("unlimited");
 
-    println!("Plan: {}", capitalize(plan));
-    println!();
-    println!("Bandwidth Usage:");
-    println!("  Used:  {}", format_bytes(bandwidth));
-    println!("  Limit: {}", limit);
+    log::info(format!("Plan: {}", capitalize(plan)))?;
+    log::info(format!("Bandwidth Used: {}", format_bytes(bandwidth)))?;
+    log::info(format!("Bandwidth Limit: {}", limit))?;
+
+    outro("Done")?;
 
     Ok(())
 }
 
-/// Open upgrade page
-pub async fn upgrade() -> Result<()> {
+/// Upgrade to a paid plan
+pub async fn upgrade(plan: Option<String>) -> Result<()> {
+    use cliclack::{intro, outro, outro_cancel, log, note};
+
     let config = Config::load()?;
-    let _ = config.require_auth()?;
+    let token = config.require_auth()?;
 
-    let upgrade_url = format!("{}/upgrade", config.server_url.replace("/api", ""));
+    intro("dvaar upgrade")?;
 
-    println!("Opening upgrade page...");
-    println!("If browser doesn't open, visit: {}", upgrade_url);
+    // If no plan specified, show interactive selection
+    let plan = match plan {
+        Some(p) => p,
+        None => {
+            match select_plan()? {
+                Some(p) => p,
+                None => {
+                    outro_cancel("Upgrade cancelled")?;
+                    return Ok(());
+                }
+            }
+        }
+    };
 
-    if let Err(e) = open::that(&upgrade_url) {
-        tracing::warn!("Failed to open browser: {}", e);
+    let spinner = cliclack::spinner();
+    spinner.start(format!("Creating checkout session for {} plan...", plan));
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("{}/api/billing/checkout", config.server_url))
+        .header("Authorization", format!("Bearer {}", token))
+        .json(&CheckoutRequest { plan: plan.clone() })
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        spinner.error(format!("Failed: {} - {}", status, text));
+        return Ok(());
     }
 
+    let checkout: CheckoutResponse = response.json().await?;
+    spinner.stop("Checkout session created");
+
+    log::info("Opening checkout page in your browser...")?;
+    note("Checkout URL", &checkout.checkout_url)?;
+
+    if let Err(e) = open::that(&checkout.checkout_url) {
+        tracing::warn!("Failed to open browser: {}", e);
+        log::warning("Could not open browser automatically. Please visit the URL above.")?;
+    }
+
+    outro("Complete payment in your browser to activate your plan")?;
+
     Ok(())
+}
+
+/// Interactive plan selection
+fn select_plan() -> Result<Option<String>> {
+    use cliclack::{select, note};
+    use console::style;
+
+    // Show pricing table
+    let pricing_table = format!(
+        "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+        "┌─────────────┬─────────────┬─────────────┬─────────────┐",
+        "│   Feature   │    Free     │   Hobby     │     Pro     │",
+        "├─────────────┼─────────────┼─────────────┼─────────────┤",
+        "│ Price       │     $0      │   $5/mo     │   $15/mo    │",
+        "├─────────────┼─────────────┼─────────────┼─────────────┤",
+        "│ Tunnels/hr  │      5      │     20      │    100      │",
+        "│ Requests/m  │     60      │    600      │   3000      │",
+        "├─────────────┼─────────────┼─────────────┼─────────────┤",
+        "│ Custom sub  │      ✗      │     ✓       │     ✓       │",
+        "│ Reserved    │      ✗      │     ✓       │     ✓       │",
+        "└─────────────┴─────────────┴─────────────┴─────────────┘",
+    );
+
+    note("Pricing", &pricing_table)?;
+    cliclack::log::info(format!("Full details: {}", style("https://dvaar.io/#pricing").cyan().underlined()))?;
+
+    let selection: &str = select("Select a plan to upgrade")
+        .item("hobby", "Hobby - $5/month", "20 tunnels/hr, 600 req/min, custom subdomains")
+        .item("pro", "Pro - $15/month", "100 tunnels/hr, 3000 req/min, 5 team seats")
+        .interact()?;
+
+    Ok(Some(selection.to_string()))
 }
 
 fn capitalize(s: &str) -> String {

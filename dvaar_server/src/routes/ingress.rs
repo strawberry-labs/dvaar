@@ -71,9 +71,8 @@ pub async fn handle_ingress(
 
     tracing::debug!("Ingress request for subdomain: {}", subdomain);
 
-    // Check rate limit for this subdomain
-    // TODO: Check if tunnel owner is paid user
-    let is_paid = false;
+    // Determine if tunnel owner is paid for rate limiting
+    let is_paid = get_tunnel_owner_paid_status(&state, &subdomain).await;
     match state.rate_limiter.check_requests(&subdomain, is_paid).await {
         Ok(result) if !result.allowed => {
             tracing::warn!(
@@ -255,6 +254,30 @@ async fn forward_to_remote_node(
             (StatusCode::BAD_GATEWAY, "Remote node unavailable").into_response()
         }
     }
+}
+
+/// Get the paid status of the tunnel owner
+async fn get_tunnel_owner_paid_status(state: &AppState, subdomain: &str) -> bool {
+    // First check local tunnel
+    if let Some(handle) = state.tunnels.get(subdomain) {
+        if let Ok(user_id) = uuid::Uuid::parse_str(&handle.user_id) {
+            if let Ok(Some(user)) = queries::find_user_by_id(&state.db, user_id).await {
+                return user.is_paid();
+            }
+        }
+        return false;
+    }
+
+    // Check Redis for remote tunnel
+    if let Ok(Some(route_info)) = state.route_manager.get_route(subdomain).await {
+        if let Ok(user_id) = uuid::Uuid::parse_str(&route_info.user_id) {
+            if let Ok(Some(user)) = queries::find_user_by_id(&state.db, user_id).await {
+                return user.is_paid();
+            }
+        }
+    }
+
+    false // Default to free tier if can't determine
 }
 
 /// Extract subdomain from host

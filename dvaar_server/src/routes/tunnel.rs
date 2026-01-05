@@ -92,9 +92,8 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         }
     };
 
-    // Check rate limit for tunnel creation
-    // TODO: Check user plan to determine if paid
-    let is_paid = false; // For now, treat all as free tier
+    // Check rate limit for tunnel creation based on user's plan
+    let is_paid = user.is_paid();
     match state.rate_limiter.check_tunnel_creation(&user.id.to_string(), is_paid).await {
         Ok(result) if !result.allowed => {
             tracing::warn!(

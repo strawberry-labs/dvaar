@@ -2,7 +2,8 @@
 
 use crate::config::Config;
 use anyhow::{anyhow, Context, Result};
-use serde::{Deserialize, Serialize};
+use console::style;
+use serde::Deserialize;
 use std::time::Duration;
 
 const GITHUB_DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
@@ -43,59 +44,72 @@ struct DvaarUser {
 
 /// Handle login command
 pub async fn run(token: Option<String>) -> Result<()> {
+    use cliclack::{intro, outro, note, confirm};
+
     let mut config = Config::load()?;
+
+    intro(style(" dvaar login ").on_cyan().black().to_string())?;
 
     if let Some(token) = token {
         // Direct token provided
         config.set_token(token);
         config.save()?;
-        println!("Token saved successfully.");
+        cliclack::log::success("Token saved successfully")?;
+        outro("You're all set!")?;
         return Ok(());
     }
 
     // GitHub Device Flow
-    println!();
-    println!("Authenticating with GitHub...");
-    println!();
+    let spinner = cliclack::spinner();
+    spinner.start("Connecting to GitHub...");
 
     let client = reqwest::Client::new();
 
     // Step 1: Request device code
     let device_response = request_device_code(&client, &config).await?;
+    spinner.stop("Connected to GitHub");
 
     // Step 2: Display code to user
-    println!("! First, copy your one-time code: {}", device_response.user_code);
-    println!();
-    println!("Press Enter to open {} in your browser...", device_response.verification_uri);
+    let code_display = format!(
+        "Copy this code: {}\n\nThen paste it at: {}",
+        style(&device_response.user_code).green().bold(),
+        style(&device_response.verification_uri).cyan().underlined()
+    );
+    note("One-Time Code", &code_display)?;
 
-    // Wait for Enter key
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input)?;
+    let should_open = confirm("Open GitHub in your browser?")
+        .initial_value(true)
+        .interact()?;
 
-    // Open browser
-    if let Err(e) = open::that(&device_response.verification_uri) {
-        println!("Could not open browser automatically.");
-        println!("Please open: {}", device_response.verification_uri);
-        tracing::debug!("Failed to open browser: {}", e);
+    if should_open {
+        // Open browser
+        if let Err(e) = open::that(&device_response.verification_uri) {
+            cliclack::log::warning("Could not open browser automatically")?;
+            cliclack::log::info(format!("Please visit: {}", device_response.verification_uri))?;
+            tracing::debug!("Failed to open browser: {}", e);
+        } else {
+            cliclack::log::info("Browser opened")?;
+        }
     }
 
-    println!();
-    println!("Waiting for authentication...");
-
     // Step 3: Poll for access token
+    let spinner = cliclack::spinner();
+    spinner.start("Waiting for authentication...");
     let github_token = poll_for_token(&client, &config, &device_response).await?;
+    spinner.stop("Authenticated with GitHub");
 
     // Step 4: Exchange GitHub token for Dvaar API token
-    println!("Exchanging token...");
+    let spinner = cliclack::spinner();
+    spinner.start("Setting up your account...");
     let dvaar_response = exchange_for_dvaar_token(&client, &config, &github_token).await?;
+    spinner.stop("Account ready");
 
     // Step 5: Save token
     config.set_token(dvaar_response.token);
     config.save()?;
 
-    println!();
-    println!("Logged in as {}", dvaar_response.user.email);
-    println!();
+    cliclack::log::success(format!("Logged in as {}", style(&dvaar_response.user.email).green()))?;
+    outro("You're all set! Run `dvaar http <port>` to create a tunnel.")?;
 
     Ok(())
 }
