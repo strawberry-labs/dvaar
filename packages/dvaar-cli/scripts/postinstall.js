@@ -169,7 +169,7 @@ async function main() {
     console.error(`Installation failed: ${e.message}`);
     console.error("");
     console.error("You can install manually:");
-    console.error("  curl -sSL https://dvaar.io/install | bash");
+    console.error("  curl -sSL https://dvaar.io/install.sh | bash");
     process.exit(1);
   }
 }

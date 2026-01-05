@@ -12,7 +12,7 @@ const installCommands = [
   {
     id: "curl",
     label: "curl",
-    command: "curl -sSL https://dvaar.io/install | bash",
+    command: "curl -sSL https://dvaar.io/install.sh | bash",
   },
   {
     id: "npm",
@@ -20,14 +20,19 @@ const installCommands = [
     command: "npm install -g dvaar",
   },
   {
-    id: "brew",
-    label: "brew",
-    command: "brew install dvaar-io/tap/dvaar",
+    id: "pnpm",
+    label: "pnpm",
+    command: "pnpm add -g dvaar",
   },
   {
-    id: "cargo",
-    label: "cargo",
-    command: "cargo install dvaar",
+    id: "bun",
+    label: "bun",
+    command: "bun add -g dvaar",
+  },
+  {
+    id: "brew",
+    label: "brew",
+    command: "brew install strawberry-labs/dvaar",
   },
   {
     id: "windows",

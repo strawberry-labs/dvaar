@@ -116,13 +116,13 @@ CONTROL_PLANE_IP=x.x.x.x curl -sSL https://raw.githubusercontent.com/YOUR_REPO/d
 
 ### install.sh
 
-**Location**: `scripts/install.sh` (also served at `https://dvaar.io/install`)
+**Location**: `scripts/install.sh` (served at `https://dvaar.io/install.sh`)
 
 **Purpose**: One-line installer for macOS and Linux users.
 
 **Usage**:
 ```bash
-curl -sSL https://dvaar.io/install | bash
+curl -sSL https://dvaar.io/install.sh | bash
 ```
 
 **What it does**:
@@ -133,7 +133,7 @@ curl -sSL https://dvaar.io/install | bash
 4. Verifies the binary works
 5. Prints success message with next steps
 
-**Fallback**: If no pre-built binary exists, suggests using cargo install.
+**Fallback**: If no pre-built binary exists, suggests building from source.
 
 ---
 
@@ -161,12 +161,11 @@ irm https://dvaar.io/install.ps1 | iex
 
 ### Homebrew
 
-**Location**: Separate repo `dvaar/homebrew-tap`
+**Location**: Separate repo `strawberry-labs/homebrew-dvaar`
 
 **Installation**:
 ```bash
-brew tap dvaar/tap
-brew install dvaar
+brew install strawberry-labs/dvaar
 ```
 
 **Formula** (`Formula/dvaar.rb`):
@@ -234,29 +233,6 @@ npx @dvaar/cli http 3000
 
 ---
 
-### Cargo
-
-**Installation**:
-```bash
-cargo install dvaar
-```
-
-**How it works**: Publishes to crates.io, users compile from source.
-
-**Cargo.toml** additions for publishing:
-```toml
-[package]
-name = "dvaar"
-version = "0.1.0"
-license = "MIT"
-repository = "https://github.com/strawberry-labs/dvaar"
-description = "Expose your localhost to the internet"
-keywords = ["tunnel", "localhost", "ngrok", "http"]
-categories = ["command-line-utilities", "web-programming"]
-```
-
----
-
 ## CI/CD Automation
 
 ### Release Workflow
@@ -278,9 +254,7 @@ categories = ["command-line-utilities", "web-programming"]
 
 3. **Update Homebrew formula** with new version and SHA
 
-4. **Publish to npm** (`@dvaar/cli`)
-
-5. **Publish to crates.io** (`dvaar`)
+4. **Publish to npm** (`dvaar`)
 
 ### Server Deploy Workflow
 
@@ -300,29 +274,30 @@ categories = ["command-line-utilities", "web-programming"]
 ## Edge Node Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                     Control Plane                            │
-│                    (Hetzner FSN1)                           │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐   │
-│  │ Postgres │  │  Redis   │  │  Dvaar   │  │  Caddy   │   │
-│  │   :5432  │  │  :6379   │  │  :8080   │  │  :443    │   │
-│  └──────────┘  └──────────┘  └──────────┘  └──────────┘   │
-└─────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────┐
+│                     Control Plane                         │
+│                  (Hetzner FSN1 - CPX21)                   │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  │
+│  │ Postgres │  │  Redis   │  │  Dvaar   │  │  Caddy   │  │
+│  │   :5432  │  │  :6379   │  │  :8080   │  │  :443    │  │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────┘  │
+└───────────────────────────────────────────────────────────┘
         │                │
         │ DB Connection  │ Redis Connection
         │                │
-┌───────┴────────┐  ┌────┴───────────┐  ┌─────────────────┐
-│   Edge Node 1  │  │   Edge Node 2  │  │   Edge Node 3   │
-│  (Hetzner HEL) │  │  (Hetzner ASH) │  │  (Vultr SYD)    │
-│  ┌──────────┐  │  │  ┌──────────┐  │  │  ┌──────────┐   │
-│  │  Dvaar   │  │  │  │  Dvaar   │  │  │  │  Dvaar   │   │
-│  │  :8080   │  │  │  │  :8080   │  │  │  │  :8080   │   │
-│  └──────────┘  │  │  └──────────┘  │  │  └──────────┘   │
-│  ┌──────────┐  │  │  ┌──────────┐  │  │  ┌──────────┐   │
-│  │  Caddy   │  │  │  │  Caddy   │  │  │  │  Caddy   │   │
-│  │  :443    │  │  │  │  :443    │  │  │  │  :443    │   │
-│  └──────────┘  │  │  └──────────┘  │  │  └──────────┘   │
-└────────────────┘  └────────────────┘  └─────────────────┘
+┌───────┴────────────────┴───────┐  ┌───────────────────────┐
+│         Edge Node 1            │  │       Edge Node 2     │
+│     (Hetzner ASH - CPX11)      │  │   (Hetzner HIL - CPX11)│
+│  ┌──────────┐  ┌──────────┐    │  │  ┌──────────┐  ┌──────────┐ │
+│  │  Dvaar   │  │  Caddy   │    │  │  │  Dvaar   │  │  Caddy   │ │
+│  │  :8080   │  │  :443    │    │  │  │  :8080   │  │  :443    │ │
+│  └──────────┘  └──────────┘    │  │  └──────────┘  └──────────┘ │
+└────────────────────────────────┘  └─────────────────────────────┘
+
+All servers on Hetzner Cloud:
+- Control Plane: CPX21 (3 vCPU, 4GB RAM) - €8.50/mo
+- Edge Nodes:    CPX11 (2 vCPU, 2GB RAM) - €4.50/mo each
+- Total:         ~€17.50/mo for infrastructure
 ```
 
 **How it works**:

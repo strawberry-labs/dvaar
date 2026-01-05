@@ -15,8 +15,8 @@ const featureOptions: FeatureOption[] = [
     title: "Quick Start",
     description: "Expose your local server to the internet with one command.",
     code: `# Install Dvaar (choose your method)
-curl -sSL https://dvaar.io/install | bash  # macOS/Linux
-npm install -g dvaar                         # npm
+curl -sSL https://dvaar.io/install.sh | bash  # macOS/Linux
+npm install -g dvaar                           # npm
 
 # Login with GitHub (uses Device Flow)
 dvaar login

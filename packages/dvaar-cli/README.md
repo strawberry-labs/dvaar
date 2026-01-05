@@ -223,19 +223,13 @@ Use arrow keys to navigate, Enter to select. Opens Stripe checkout in your brows
 ### curl (macOS/Linux)
 
 ```bash
-curl -sSL https://dvaar.io/install | bash
+curl -sSL https://dvaar.io/install.sh | bash
 ```
 
 ### Homebrew (macOS)
 
 ```bash
-brew install dvaar-io/tap/dvaar
-```
-
-### Cargo (Rust)
-
-```bash
-cargo install dvaar
+brew install strawberry-labs/dvaar
 ```
 
 ### Windows (PowerShell)

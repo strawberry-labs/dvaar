@@ -43,7 +43,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/rust-action@stable
+        uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
@@ -148,28 +148,6 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-  publish-crates:
-    name: Publish to crates.io
-    needs: release
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-action@stable
-
-      - name: Publish dvaar_common
-        run: cargo publish -p dvaar_common --token ${{ secrets.CRATES_IO_TOKEN }}
-        continue-on-error: true
-
-      - name: Publish dvaar (CLI)
-        run: |
-          sleep 30  # Wait for dvaar_common to be indexed
-          cargo publish -p dvaar_cli --token ${{ secrets.CRATES_IO_TOKEN }}
-        continue-on-error: true
-
   update-homebrew:
     name: Update Homebrew Formula
     needs: release
@@ -179,7 +157,7 @@ jobs:
       - name: Checkout tap repo
         uses: actions/checkout@v4
         with:
-          repository: dvaar/homebrew-tap
+          repository: strawberry-labs/homebrew-dvaar
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: homebrew-tap
 

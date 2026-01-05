@@ -168,7 +168,7 @@ fn print_update_message(latest_version: &str) {
     eprintln!("\x1b[33m│\x1b[0m  You have: {}                              \x1b[33m│\x1b[0m", CURRENT_VERSION);
     eprintln!("\x1b[33m│\x1b[0m                                             \x1b[33m│\x1b[0m");
     eprintln!("\x1b[33m│\x1b[0m  Update with:                               \x1b[33m│\x1b[0m");
-    eprintln!("\x1b[33m│\x1b[0m    \x1b[36mcurl -sSL https://dvaar.io/install | bash\x1b[0m \x1b[33m│\x1b[0m");
+    eprintln!("\x1b[33m│\x1b[0m  \x1b[36mcurl -sSL https://dvaar.io/install.sh | bash\x1b[0m \x1b[33m│\x1b[0m");
     eprintln!("\x1b[33m╰─────────────────────────────────────────────╯\x1b[0m");
     eprintln!();
 }

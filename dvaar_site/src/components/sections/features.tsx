@@ -31,7 +31,7 @@ export function Features() {
                 {description}
               </p>
               <Link
-                href="#"
+                href="/docs"
                 className="text-sm text-foreground/70 hover:text-foreground hover:underline underline-offset-4 transition-colors cursor-pointer"
               >
                 Learn more &gt;

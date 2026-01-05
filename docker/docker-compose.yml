@@ -31,7 +31,7 @@ services:
       retries: 5
 
   dvaar:
-    image: ghcr.io/${GITHUB_REPO:-dvaar/dvaar}:${VERSION:-latest}
+    image: ghcr.io/${GITHUB_REPO:-strawberry-labs/dvaar}:${VERSION:-latest}
     container_name: dvaar-server
     restart: unless-stopped
     ports:

@@ -2,7 +2,13 @@
 set -euo pipefail
 
 # Dvaar Server Setup Script
-# Usage: curl -sSL https://raw.githubusercontent.com/YOUR_REPO/dvaar/main/scripts/setup-server.sh | bash -s -- [control-plane|edge] [OPTIONS]
+# Usage: curl -sSL https://raw.githubusercontent.com/strawberry-labs/dvaar/main/scripts/setup-server.sh | bash -s -- [control-plane|edge]
+#
+# Environment variables:
+#   GITHUB_REPO       - GitHub repo (default: strawberry-labs/dvaar)
+#   BASE_DOMAIN       - Main domain (default: dvaar.io)
+#   TUNNEL_DOMAIN     - Tunnel domain (default: dvaar.app)
+#   CONTROL_PLANE_IP  - Required for edge nodes
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -18,7 +24,7 @@ NODE_TYPE="${1:-control-plane}"
 CONTROL_PLANE_IP="${CONTROL_PLANE_IP:-}"
 BASE_DOMAIN="${BASE_DOMAIN:-dvaar.io}"
 TUNNEL_DOMAIN="${TUNNEL_DOMAIN:-dvaar.app}"
-GITHUB_REPO="${GITHUB_REPO:-}"
+GITHUB_REPO="${GITHUB_REPO:-strawberry-labs/dvaar}"
 
 if [[ "$NODE_TYPE" != "control-plane" && "$NODE_TYPE" != "edge" ]]; then
     error "Usage: $0 [control-plane|edge]"
@@ -115,13 +121,21 @@ EOF
 
     # Download docker-compose and Caddyfile
     log "Downloading configuration files..."
-    curl -sSL "https://raw.githubusercontent.com/${GITHUB_REPO:-dvaar/dvaar}/main/docker/docker-compose.yml" -o docker-compose.yml
-    curl -sSL "https://raw.githubusercontent.com/${GITHUB_REPO:-dvaar/dvaar}/main/docker/Caddyfile" -o Caddyfile
+    curl -sSL "https://raw.githubusercontent.com/${GITHUB_REPO}/main/docker/docker-compose.yml" -o docker-compose.yml
+    curl -sSL "https://raw.githubusercontent.com/${GITHUB_REPO}/main/docker/Caddyfile" -o Caddyfile
 
 else
     # Edge node setup
     if [[ -z "$CONTROL_PLANE_IP" ]]; then
-        error "CONTROL_PLANE_IP is required for edge nodes"
+        error "CONTROL_PLANE_IP is required for edge nodes. Set it via: export CONTROL_PLANE_IP=x.x.x.x"
+    fi
+
+    if [[ -z "${CLUSTER_SECRET:-}" ]]; then
+        error "CLUSTER_SECRET is required for edge nodes. Get it from the control plane's /opt/dvaar/.env"
+    fi
+
+    if [[ -z "${POSTGRES_PASSWORD:-}" ]]; then
+        error "POSTGRES_PASSWORD is required for edge nodes. Get it from the control plane's /opt/dvaar/.env"
     fi
 
     cat > .env << EOF
@@ -134,13 +148,13 @@ PUBLIC_URL=https://api.$BASE_DOMAIN
 
 # Control Plane Connection
 CONTROL_PLANE_IP=$CONTROL_PLANE_IP
-CLUSTER_SECRET=${CLUSTER_SECRET:-CHANGE_ME}
+CLUSTER_SECRET=$CLUSTER_SECRET
 
 # Redis (connect to control plane)
 REDIS_URL=redis://$CONTROL_PLANE_IP:6379
 
 # Database (connect to control plane)
-DATABASE_URL=postgres://dvaar:CHANGE_ME@$CONTROL_PLANE_IP:5432/dvaar
+DATABASE_URL=postgres://dvaar:$POSTGRES_PASSWORD@$CONTROL_PLANE_IP:5432/dvaar
 
 # Container Registry
 GITHUB_REPO=$GITHUB_REPO
@@ -153,7 +167,7 @@ version: '3.8'
 
 services:
   dvaar:
-    image: ghcr.io/${GITHUB_REPO:-dvaar/dvaar}:${VERSION:-latest}
+    image: ghcr.io/${GITHUB_REPO:-strawberry-labs/dvaar}:${VERSION:-latest}
     container_name: dvaar-server
     restart: unless-stopped
     ports:
@@ -195,7 +209,7 @@ volumes:
   caddy_config:
 EOF
 
-    curl -sSL "https://raw.githubusercontent.com/${GITHUB_REPO:-dvaar/dvaar}/main/docker/Caddyfile" -o Caddyfile
+    curl -sSL "https://raw.githubusercontent.com/${GITHUB_REPO}/main/docker/Caddyfile" -o Caddyfile
 fi
 
 # Create systemd service for auto-start
@@ -236,8 +250,8 @@ if [[ "$NODE_TYPE" == "control-plane" ]]; then
     log "4. Start services: cd /opt/dvaar && docker compose up -d"
     log "5. Access admin at: https://admin.$BASE_DOMAIN"
 else
-    log "1. Update CLUSTER_SECRET and DATABASE_URL password in /opt/dvaar/.env"
-    log "2. Set up DNS: *.$TUNNEL_DOMAIN -> $PUBLIC_IP (or use GeoDNS)"
-    log "3. Start services: cd /opt/dvaar && docker compose up -d"
+    log "1. Set up DNS: *.$TUNNEL_DOMAIN -> $PUBLIC_IP (or use GeoDNS)"
+    log "2. Start services: cd /opt/dvaar && docker compose up -d"
+    log "3. Verify connection to control plane"
 fi
 log "========================================="

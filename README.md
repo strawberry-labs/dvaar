@@ -37,10 +37,10 @@ curl -sSL https://dvaar.io/install.sh | bash
 irm https://dvaar.io/install.ps1 | iex
 ```
 
-### From Source
+### Homebrew (macOS)
 
 ```bash
-cargo install dvaar
+brew install strawberry-labs/dvaar
 ```
 
 ## Quick Start

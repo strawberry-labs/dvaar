@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Dvaar CLI Installer
-# Usage: curl -sSL https://dvaar.io/install | bash
+# Usage: curl -sSL https://dvaar.io/install.sh | bash
 
 VERSION="${DVAAR_VERSION:-latest}"
 GITHUB_REPO="strawberry-labs/dvaar"

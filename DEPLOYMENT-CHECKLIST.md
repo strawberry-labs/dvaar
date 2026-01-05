@@ -114,54 +114,99 @@ Complete guide to deploying Dvaar from zero to production.
 ### 4.3 Add SSH Key
 - [ ] Go to **Security** → **SSH Keys**
 - [ ] Click **"Add SSH Key"**
-- [ ] Paste your public key:
+- [ ] Paste your deploy key public key (created in Phase 7):
   ```bash
-  # Get your public key (run locally)
-  cat ~/.ssh/id_ed25519.pub
-  # or
-  cat ~/.ssh/id_rsa.pub
+  # Get your deploy key public key (run locally)
+  cat ~/.ssh/dvaar_deploy.pub
   ```
-- [ ] Name: `deploy-key`
+- [ ] Name: `dvaar-deploy`
 - [ ] Click **"Add SSH Key"**
+
+> **Note**: If you haven't created your deploy key yet, skip to Phase 7 first, then come back here.
 
 ### 4.4 Create Control Plane Server
 - [ ] Click **"Add Server"**
-- [ ] **Location**: Choose based on your target users
-  | Location | Code | Latency Target |
-  |----------|------|----------------|
-  | Falkenstein, DE | fsn1 | Europe |
-  | Nuremberg, DE | nbg1 | Europe |
-  | Helsinki, FI | hel1 | Europe/Nordic |
-  | Ashburn, US | ash | North America |
+- [ ] **Location**: Choose based on your primary user base
+  | Location | Code | Best For |
+  |----------|------|----------|
+  | Falkenstein, DE | fsn1 | Central Europe |
+  | Nuremberg, DE | nbg1 | Central Europe |
+  | Helsinki, FI | hel1 | Nordic/Eastern Europe |
+  | Ashburn, US | ash | US East Coast |
   | Hillsboro, US | hil | US West Coast |
 
 - [ ] **Image**: Ubuntu 24.04
-- [ ] **Type**: Shared vCPU → **CPX21**
+- [ ] **Type**: Shared vCPU → **CPX21** (recommended for control plane)
   | Spec | Value |
   |------|-------|
   | vCPU | 3 AMD |
   | RAM | 4 GB |
   | SSD | 80 GB |
   | Traffic | 20 TB |
-  | Price | ~€15/mo |
+  | Price | ~€8.50/mo |
 
 - [ ] **Networking**: Public IPv4 (default)
-- [ ] **SSH Keys**: Select your `deploy-key`
+- [ ] **SSH Keys**: Select your `dvaar-deploy` key
 - [ ] **Name**: `dvaar-control`
 - [ ] Click **"Create & Buy now"**
 
-### 4.5 Record Server IP
-- [ ] Wait for server to be "Running" (1-2 minutes)
-- [ ] Copy the **IPv4 address**
+### 4.5 Create Edge Node Servers (2 nodes)
+
+Create two edge servers in different locations for geographic distribution:
+
+#### Edge Node 1
+- [ ] Click **"Add Server"**
+- [ ] **Location**: Different from control plane (e.g., `ash` for US East)
+- [ ] **Image**: Ubuntu 24.04
+- [ ] **Type**: Shared vCPU → **CPX11** (sufficient for edge nodes)
+  | Spec | Value |
+  |------|-------|
+  | vCPU | 2 AMD |
+  | RAM | 2 GB |
+  | SSD | 40 GB |
+  | Traffic | 20 TB |
+  | Price | ~€4.50/mo |
+
+- [ ] **Networking**: Public IPv4 (default)
+- [ ] **SSH Keys**: Select your `dvaar-deploy` key
+- [ ] **Name**: `dvaar-edge-1`
+- [ ] Click **"Create & Buy now"**
+
+#### Edge Node 2
+- [ ] Click **"Add Server"**
+- [ ] **Location**: Third location (e.g., `hil` for US West or `hel1` for Nordic)
+- [ ] **Image**: Ubuntu 24.04
+- [ ] **Type**: Shared vCPU → **CPX11**
+- [ ] **Networking**: Public IPv4 (default)
+- [ ] **SSH Keys**: Select your `dvaar-deploy` key
+- [ ] **Name**: `dvaar-edge-2`
+- [ ] Click **"Create & Buy now"**
+
+### 4.6 Record All Server IPs
+- [ ] Wait for all servers to be "Running" (1-2 minutes each)
+- [ ] Record all IPv4 addresses:
   ```
-  Control Plane IP: xxx.xxx.xxx.xxx
+  Control Plane IP: xxx.xxx.xxx.xxx  (dvaar-control)
+  Edge Node 1 IP:   yyy.yyy.yyy.yyy  (dvaar-edge-1)
+  Edge Node 2 IP:   zzz.zzz.zzz.zzz  (dvaar-edge-2)
   ```
 
-### 4.6 Verify SSH Access
-- [ ] Test SSH connection
+### 4.7 Verify SSH Access to All Servers
+- [ ] Test SSH to control plane
   ```bash
-  ssh root@CONTROL_PLANE_IP
-  # Should connect without password prompt
+  ssh -i ~/.ssh/dvaar_deploy root@CONTROL_PLANE_IP
+  exit
+  ```
+
+- [ ] Test SSH to edge node 1
+  ```bash
+  ssh -i ~/.ssh/dvaar_deploy root@EDGE_NODE_1_IP
+  exit
+  ```
+
+- [ ] Test SSH to edge node 2
+  ```bash
+  ssh -i ~/.ssh/dvaar_deploy root@EDGE_NODE_2_IP
   exit
   ```
 
@@ -271,31 +316,69 @@ Complete guide to deploying Dvaar from zero to production.
 
 ---
 
-## Phase 7: GitHub Secrets Configuration
+## Phase 7: SSH Deploy Key Setup
 
-### 7.1 Add SSH Private Key
+> **IMPORTANT**: Never use your personal SSH keys for deployment. Create dedicated deploy keys for security and easy rotation.
+
+### 7.1 Generate Dedicated Deploy Key
+- [ ] On your **local machine** (not the server), generate a new key pair:
+  ```bash
+  # Generate deploy key (no passphrase for CI/CD automation)
+  ssh-keygen -t ed25519 -C "dvaar-deploy" -f ~/.ssh/dvaar_deploy -N ""
+
+  # This creates two files:
+  # ~/.ssh/dvaar_deploy      (private key - goes in GitHub secrets)
+  # ~/.ssh/dvaar_deploy.pub  (public key - goes on servers)
+  ```
+
+### 7.2 Add Public Key to Servers
+- [ ] Copy the public key to your control plane:
+  ```bash
+  # Copy public key to control plane
+  ssh-copy-id -i ~/.ssh/dvaar_deploy.pub root@CONTROL_PLANE_IP
+
+  # Or manually add to authorized_keys:
+  cat ~/.ssh/dvaar_deploy.pub | ssh root@CONTROL_PLANE_IP "cat >> ~/.ssh/authorized_keys"
+  ```
+
+- [ ] Verify key-based access works:
+  ```bash
+  ssh -i ~/.ssh/dvaar_deploy root@CONTROL_PLANE_IP "echo 'Deploy key works!'"
+  ```
+
+### 7.3 Add Deploy Key to Server for Edge Nodes
+- [ ] Copy the deploy key to the control plane (for add-edge-node.sh):
+  ```bash
+  scp ~/.ssh/dvaar_deploy root@CONTROL_PLANE_IP:~/.ssh/dvaar_deploy
+  ssh root@CONTROL_PLANE_IP "chmod 600 ~/.ssh/dvaar_deploy"
+  ```
+
+### 7.4 Configure GitHub Secrets
 - [ ] Go to repository **Settings** → **Secrets and variables** → **Actions**
 - [ ] Click **"New repository secret"**
 - [ ] Name: `SSH_PRIVATE_KEY`
-- [ ] Value: Your SSH private key
+- [ ] Value: Contents of your **private** deploy key
   ```bash
-  # Get your private key (run locally)
-  cat ~/.ssh/id_ed25519
-  # or
-  cat ~/.ssh/id_rsa
+  # Get private key content (run locally)
+  cat ~/.ssh/dvaar_deploy
   ```
 - [ ] Click **"Add secret"**
 
-### 7.2 Add Control Plane Host
 - [ ] Click **"New repository secret"**
 - [ ] Name: `CONTROL_PLANE_HOST`
 - [ ] Value: Your control plane IP address
 - [ ] Click **"Add secret"**
 
-### 7.3 Verify Secrets
-- [ ] Confirm both secrets are listed:
+### 7.5 Verify Secrets
+- [ ] Confirm secrets are listed:
   - `SSH_PRIVATE_KEY`
   - `CONTROL_PLANE_HOST`
+
+### 7.6 Security Best Practices
+- [ ] Store deploy key backup in password manager (1Password, Bitwarden, etc.)
+- [ ] Set calendar reminder to rotate keys every 6-12 months
+- [ ] Never commit keys to git (they're in .gitignore)
+- [ ] If key is compromised: regenerate, update GitHub secret, update all servers
 
 ---
 
@@ -386,9 +469,87 @@ Complete guide to deploying Dvaar from zero to production.
 
 ---
 
-## Phase 10: CLI Setup (Optional - For Testing)
+## Phase 10: Edge Node Setup
 
-### 10.1 Build CLI Locally
+Now that the control plane is running, set up the two edge nodes.
+
+### 10.1 Copy Deploy Key to Control Plane
+- [ ] From your local machine, copy the deploy key:
+  ```bash
+  scp ~/.ssh/dvaar_deploy root@CONTROL_PLANE_IP:~/.ssh/dvaar_deploy
+  ssh root@CONTROL_PLANE_IP "chmod 600 ~/.ssh/dvaar_deploy"
+  ```
+
+### 10.2 Set Up Edge Node 1
+- [ ] SSH into control plane:
+  ```bash
+  ssh root@CONTROL_PLANE_IP
+  ```
+
+- [ ] Run add-edge-node script:
+  ```bash
+  cd /opt/dvaar
+  curl -sSL "https://raw.githubusercontent.com/YOUR_USERNAME/dvaar/main/scripts/add-edge-node.sh" -o add-edge-node.sh
+  chmod +x add-edge-node.sh
+  ./add-edge-node.sh EDGE_NODE_1_IP
+  ```
+
+- [ ] Verify edge node 1 is running:
+  ```bash
+  ssh -i ~/.ssh/dvaar_deploy root@EDGE_NODE_1_IP "cd /opt/dvaar && docker compose ps"
+  ```
+
+### 10.3 Set Up Edge Node 2
+- [ ] From control plane, run:
+  ```bash
+  ./add-edge-node.sh EDGE_NODE_2_IP
+  ```
+
+- [ ] Verify edge node 2 is running:
+  ```bash
+  ssh -i ~/.ssh/dvaar_deploy root@EDGE_NODE_2_IP "cd /opt/dvaar && docker compose ps"
+  ```
+
+### 10.4 Configure GitHub Actions for Edge Nodes
+- [ ] Go to repository **Settings** → **Variables** → **Actions**
+- [ ] Click **"New repository variable"**
+- [ ] Name: `EDGE_NODES`
+- [ ] Value (JSON array of edge node IPs):
+  ```json
+  ["EDGE_NODE_1_IP", "EDGE_NODE_2_IP"]
+  ```
+- [ ] Click **"Add variable"**
+
+### 10.5 Update DNS for Load Balancing (Optional)
+For traffic distribution across edge nodes, you have two options:
+
+#### Option A: Round-Robin DNS
+- [ ] Add multiple A records for `*.dvaar.app`:
+  ```
+  A  *  CONTROL_PLANE_IP
+  A  *  EDGE_NODE_1_IP
+  A  *  EDGE_NODE_2_IP
+  ```
+
+#### Option B: GeoDNS (Recommended for production)
+- [ ] Use Cloudflare Load Balancing or AWS Route 53 for geographic routing
+- [ ] Route users to nearest edge node based on location
+
+### 10.6 Verify Edge Nodes
+- [ ] Test health on each edge node:
+  ```bash
+  curl -s https://api.dvaar.io/api/health | jq  # Control plane
+
+  # Edge nodes should respond on their IPs (via direct request)
+  curl -sk https://EDGE_NODE_1_IP/health
+  curl -sk https://EDGE_NODE_2_IP/health
+  ```
+
+---
+
+## Phase 11: CLI Setup (Optional - For Testing)
+
+### 11.1 Build CLI Locally
 - [ ] Build release binary
   ```bash
   cd /path/to/dvaar
@@ -402,7 +563,7 @@ Complete guide to deploying Dvaar from zero to production.
   cp target/release/dvaar ~/.local/bin/
   ```
 
-### 10.2 Test CLI Login (Device Flow)
+### 11.2 Test CLI Login (Device Flow)
 - [ ] Run login command
   ```bash
   dvaar login
@@ -422,7 +583,7 @@ Complete guide to deploying Dvaar from zero to production.
 - [ ] Authorize the Dvaar app
 - [ ] Terminal shows: `Logged in as your@email.com`
 
-### 10.3 Test Tunnel
+### 11.3 Test Tunnel
 - [ ] Start a local server
   ```bash
   python3 -m http.server 8000 &
@@ -441,18 +602,18 @@ Complete guide to deploying Dvaar from zero to production.
 
 ---
 
-## Phase 11: Vercel Deployment (Marketing Site)
+## Phase 12: Vercel Deployment (Marketing Site)
 
 The main site (`dvaar.io`) with docs and blog is deployed separately on Vercel.
 
-### 11.1 Create Vercel Project
+### 12.1 Create Vercel Project
 - [ ] Go to [vercel.com](https://vercel.com) and sign in
 - [ ] Click **"Add New..."** → **"Project"**
 - [ ] Import your `dvaar_site` repository (or create one)
 - [ ] Framework Preset: **Next.js**
 - [ ] Click **"Deploy"**
 
-### 11.2 Configure Custom Domain
+### 12.2 Configure Custom Domain
 - [ ] Go to Project **Settings** → **Domains**
 - [ ] Add domain: `dvaar.io`
 - [ ] Vercel will show you the required DNS records
@@ -462,7 +623,7 @@ The main site (`dvaar.io`) with docs and blog is deployed separately on Vercel.
   ```
 - [ ] Wait for SSL certificate provisioning
 
-### 11.3 Site Structure
+### 12.3 Site Structure
 The NextJS site should have these routes:
 
 | Path | Content |
@@ -474,21 +635,21 @@ The NextJS site should have these routes:
 | `/blog/*` | Individual blog posts |
 | `/pricing` | Pricing page |
 
-### 11.4 Verify Deployment
+### 12.4 Verify Deployment
 - [ ] Check main site: `https://dvaar.io`
 - [ ] Check docs: `https://dvaar.io/docs`
 - [ ] Check blog: `https://dvaar.io/blog`
 
 ---
 
-## Phase 12: Stripe Integration
+## Phase 13: Stripe Integration
 
-### 12.1 Create Stripe Account
+### 13.1 Create Stripe Account
 - [ ] Go to [dashboard.stripe.com](https://dashboard.stripe.com)
 - [ ] Sign up or log in
 - [ ] Complete business verification (required for live mode)
 
-### 12.2 Create Products and Prices
+### 13.2 Create Products and Prices
 - [ ] Go to **Products** → **Add product**
 - [ ] Create **Hobby** product:
   - Name: `Hobby`
@@ -510,7 +671,7 @@ The NextJS site should have these routes:
     STRIPE_PRO_PRICE_ID=price_xxxxxxxxxxxxxxxxxx
     ```
 
-### 12.3 Get API Keys
+### 13.3 Get API Keys
 - [ ] Go to **Developers** → **API keys**
 - [ ] Copy **Secret key** (starts with `sk_live_` or `sk_test_`)
   ```
@@ -519,7 +680,7 @@ The NextJS site should have these routes:
 
 > **Note**: Use `sk_test_` keys for testing, `sk_live_` for production.
 
-### 12.4 Configure Webhook
+### 13.4 Configure Webhook
 - [ ] Go to **Developers** → **Webhooks**
 - [ ] Click **Add endpoint**
 - [ ] Endpoint URL: `https://api.dvaar.io/api/billing/webhook`
@@ -535,7 +696,7 @@ The NextJS site should have these routes:
   STRIPE_WEBHOOK_SECRET=whsec_xxxxxxxxxxxxxxxxxx
   ```
 
-### 12.5 Configure Customer Portal
+### 13.5 Configure Customer Portal
 - [ ] Go to **Settings** → **Billing** → **Customer portal**
 - [ ] Enable the portal
 - [ ] Configure allowed actions:
@@ -544,7 +705,7 @@ The NextJS site should have these routes:
   - [x] Allow customers to update payment methods
 - [ ] Click **Save**
 
-### 12.6 Add Stripe Secrets to Server
+### 13.6 Add Stripe Secrets to Server
 - [ ] SSH into server
   ```bash
   ssh root@CONTROL_PLANE_IP
@@ -571,7 +732,7 @@ The NextJS site should have these routes:
   docker compose restart dvaar
   ```
 
-### 12.7 Verify Stripe Integration
+### 13.7 Verify Stripe Integration
 - [ ] Test webhook endpoint
   ```bash
   curl -X POST https://api.dvaar.io/api/billing/webhook \
@@ -601,7 +762,7 @@ The NextJS site should have these routes:
   # Should open Stripe checkout page in browser
   ```
 
-### 12.8 Test Webhook (Stripe CLI - Optional)
+### 13.8 Test Webhook (Stripe CLI - Optional)
 - [ ] Install Stripe CLI: [stripe.com/docs/stripe-cli](https://stripe.com/docs/stripe-cli)
 - [ ] Login: `stripe login`
 - [ ] Forward webhooks to local:
@@ -618,29 +779,278 @@ The NextJS site should have these routes:
 ## Post-Deployment Checklist
 
 ### Security Hardening
-- [ ] Change default SSH port (optional)
-- [ ] Set up fail2ban alerts
-- [ ] Enable Hetzner firewall in addition to UFW
-- [ ] Set up monitoring (Uptime Kuma, Grafana, etc.)
 
-### Backup Configuration
-- [ ] Save all secrets securely (password manager, etc.):
-  - POSTGRES_PASSWORD
-  - CLUSTER_SECRET
-  - ADMIN_TOKEN
-  - GITHUB_CLIENT_ID
-  - GITHUB_CLIENT_SECRET
-  - STRIPE_SECRET_KEY
-  - STRIPE_WEBHOOK_SECRET
-  - STRIPE_HOBBY_PRICE_ID
-  - STRIPE_PRO_PRICE_ID
-  - SSH private key
+#### SSH Hardening
+- [ ] Disable password authentication:
+  ```bash
+  sudo nano /etc/ssh/sshd_config
+  # Set: PasswordAuthentication no
+  # Set: PermitRootLogin prohibit-password
+  sudo systemctl restart sshd
+  ```
+
+- [ ] Change default SSH port (optional but recommended):
+  ```bash
+  sudo nano /etc/ssh/sshd_config
+  # Set: Port 2222  (or another high port)
+  sudo ufw allow 2222/tcp
+  sudo ufw delete allow ssh
+  sudo systemctl restart sshd
+  ```
+
+#### Fail2ban Configuration
+- [ ] Configure fail2ban for SSH:
+  ```bash
+  sudo nano /etc/fail2ban/jail.local
+  ```
+  ```ini
+  [sshd]
+  enabled = true
+  port = ssh
+  filter = sshd
+  logpath = /var/log/auth.log
+  maxretry = 3
+  bantime = 3600
+  findtime = 600
+  ```
+  ```bash
+  sudo systemctl restart fail2ban
+  sudo fail2ban-client status sshd
+  ```
+
+#### Hetzner Cloud Firewall
+- [ ] Go to Hetzner Cloud Console → Firewalls
+- [ ] Create firewall with rules:
+  | Direction | Protocol | Port | Source |
+  |-----------|----------|------|--------|
+  | Inbound | TCP | 22 (or custom) | Your IP only |
+  | Inbound | TCP | 80 | Any |
+  | Inbound | TCP | 443 | Any |
+  | Inbound | TCP | 6000 | Control plane IP (for edge nodes) |
+- [ ] Apply firewall to your servers
+
+#### Automatic Security Updates
+- [ ] Enable unattended upgrades:
+  ```bash
+  sudo apt install unattended-upgrades
+  sudo dpkg-reconfigure -plow unattended-upgrades
+  ```
+
+---
+
+### Database Backup Procedures
+
+#### Automated Daily Backups
+- [ ] Create backup script on control plane:
+  ```bash
+  sudo nano /opt/dvaar/backup.sh
+  ```
+  ```bash
+  #!/bin/bash
+  set -euo pipefail
+
+  BACKUP_DIR="/opt/dvaar/backups"
+  TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+  RETENTION_DAYS=7
+
+  mkdir -p "$BACKUP_DIR"
+
+  # Backup PostgreSQL
+  docker compose exec -T postgres pg_dump -U dvaar dvaar | gzip > "$BACKUP_DIR/db_$TIMESTAMP.sql.gz"
+
+  # Backup .env file
+  cp /opt/dvaar/.env "$BACKUP_DIR/env_$TIMESTAMP.bak"
+
+  # Delete backups older than retention period
+  find "$BACKUP_DIR" -name "db_*.sql.gz" -mtime +$RETENTION_DAYS -delete
+  find "$BACKUP_DIR" -name "env_*.bak" -mtime +$RETENTION_DAYS -delete
+
+  echo "Backup completed: $TIMESTAMP"
+  ```
+  ```bash
+  chmod +x /opt/dvaar/backup.sh
+  ```
+
+- [ ] Set up daily cron job:
+  ```bash
+  sudo crontab -e
+  # Add this line (runs at 3 AM daily):
+  0 3 * * * /opt/dvaar/backup.sh >> /var/log/dvaar-backup.log 2>&1
+  ```
+
+- [ ] Test backup manually:
+  ```bash
+  /opt/dvaar/backup.sh
+  ls -la /opt/dvaar/backups/
+  ```
+
+#### Manual Backup Before Updates
+- [ ] Before any major update:
+  ```bash
+  cd /opt/dvaar
+
+  # Backup database
+  docker compose exec -T postgres pg_dump -U dvaar dvaar > backup_before_update.sql
+
+  # Backup current images
+  docker images | grep dvaar
+
+  # Note current version
+  docker compose ps
+  ```
+
+#### Restore from Backup
+- [ ] To restore database:
+  ```bash
+  cd /opt/dvaar
+
+  # Stop the application
+  docker compose stop dvaar
+
+  # Restore database
+  gunzip -c /opt/dvaar/backups/db_TIMESTAMP.sql.gz | \
+    docker compose exec -T postgres psql -U dvaar dvaar
+
+  # Restart application
+  docker compose start dvaar
+  ```
+
+---
+
+### Rollback Procedures
+
+#### Quick Rollback (Same Version, Config Issue)
+- [ ] If something breaks after a config change:
+  ```bash
+  cd /opt/dvaar
+
+  # Restore previous .env
+  cp /opt/dvaar/backups/env_TIMESTAMP.bak .env
+
+  # Restart services
+  docker compose restart
+  ```
+
+#### Version Rollback (Bad Deployment)
+- [ ] To rollback to a previous Docker image version:
+  ```bash
+  cd /opt/dvaar
+
+  # Edit .env to specify previous version
+  nano .env
+  # Change: VERSION=latest
+  # To:     VERSION=v1.2.3  (previous working version)
+
+  # Or edit docker-compose.yml directly:
+  # image: ghcr.io/strawberry-labs/dvaar:v1.2.3
+
+  # Pull and restart
+  docker compose pull
+  docker compose up -d
+  ```
+
+- [ ] To find available versions:
+  ```bash
+  # Check GitHub releases
+  curl -s https://api.github.com/repos/strawberry-labs/dvaar/releases | jq '.[].tag_name'
+
+  # Or check GitHub Container Registry
+  # https://github.com/strawberry-labs/dvaar/pkgs/container/dvaar
+  ```
+
+#### Full Disaster Recovery
+- [ ] If server is completely compromised:
+  1. Provision new server from Hetzner
+  2. Run setup script: `curl -sSL https://raw.githubusercontent.com/strawberry-labs/dvaar/main/scripts/setup-server.sh | bash`
+  3. Restore `.env` from backup (password manager or backup location)
+  4. Restore database from backup
+  5. Update DNS to point to new server
+  6. Update GitHub secrets with new server IP
+
+---
 
 ### Monitoring Setup
-- [ ] Set up uptime monitoring for:
-  - https://dvaar.io (Vercel - marketing site)
-  - https://api.dvaar.io/api/health (Hetzner - API)
-  - https://admin.dvaar.io (Hetzner - admin panel)
+
+#### Uptime Monitoring (Free Options)
+- [ ] Set up [UptimeRobot](https://uptimerobot.com) (free tier: 50 monitors):
+  - Monitor: `https://dvaar.io` (marketing site)
+  - Monitor: `https://api.dvaar.io/health` (API health)
+  - Monitor: `https://admin.dvaar.io` (admin panel)
+  - Set alert contacts (email, Slack, etc.)
+
+- [ ] Or use [Better Uptime](https://betterstack.com/better-uptime):
+  - Similar setup with nicer status pages
+
+#### Server Monitoring
+- [ ] Install netdata for real-time server metrics:
+  ```bash
+  bash <(curl -Ss https://my-netdata.io/kickstart.sh)
+  # Access at: http://YOUR_IP:19999
+  ```
+
+- [ ] Or use Hetzner's built-in monitoring:
+  - Go to Hetzner Cloud Console → Server → Metrics
+  - Enable alerts for CPU, memory, disk
+
+#### Log Aggregation (Optional)
+- [ ] For production, consider:
+  - [Grafana Loki](https://grafana.com/oss/loki/) - free, self-hosted
+  - [Papertrail](https://www.papertrail.com/) - easy setup, free tier
+  - [Logtail](https://betterstack.com/logtail) - modern, free tier
+
+#### Docker Log Management
+- [ ] Configure Docker log rotation:
+  ```bash
+  sudo nano /etc/docker/daemon.json
+  ```
+  ```json
+  {
+    "log-driver": "json-file",
+    "log-opts": {
+      "max-size": "10m",
+      "max-file": "3"
+    }
+  }
+  ```
+  ```bash
+  sudo systemctl restart docker
+  ```
+
+---
+
+### Secrets Management
+
+#### Store Secrets Securely
+- [ ] Save all secrets in a password manager (1Password, Bitwarden, etc.):
+  - `POSTGRES_PASSWORD`
+  - `CLUSTER_SECRET`
+  - `ADMIN_TOKEN`
+  - `GITHUB_CLIENT_ID`
+  - `GITHUB_CLIENT_SECRET`
+  - `STRIPE_SECRET_KEY`
+  - `STRIPE_WEBHOOK_SECRET`
+  - `STRIPE_HOBBY_PRICE_ID`
+  - `STRIPE_PRO_PRICE_ID`
+  - SSH deploy key (private key)
+
+#### Secret Rotation Schedule
+- [ ] Set calendar reminders:
+  | Secret | Rotation Frequency | Notes |
+  |--------|-------------------|-------|
+  | SSH deploy key | Every 6-12 months | Update all servers + GitHub |
+  | ADMIN_TOKEN | Every 6 months | Update .env on server |
+  | Stripe keys | Only if compromised | Regenerate in Stripe dashboard |
+  | GitHub OAuth | Only if compromised | Regenerate in GitHub settings |
+  | POSTGRES_PASSWORD | Every 12 months | Requires DB update + .env |
+  | CLUSTER_SECRET | Every 12 months | Update control plane + all edge nodes |
+
+#### If a Secret is Compromised
+- [ ] Immediate actions:
+  1. Rotate the compromised secret immediately
+  2. Check logs for unauthorized access
+  3. Update all locations using that secret
+  4. If SSH key: remove old public key from all servers
+  5. If Stripe: check for unauthorized transactions
 
 ---
 
@@ -693,11 +1103,15 @@ docker compose logs redis --tail 20
 
 | Resource | Provider | Cost |
 |----------|----------|------|
-| Control Plane (CPX21) | Hetzner | ~€15/mo |
+| Control Plane (CPX21) | Hetzner | ~€8.50/mo |
+| Edge Node 1 (CPX11) | Hetzner | ~€4.50/mo |
+| Edge Node 2 (CPX11) | Hetzner | ~€4.50/mo |
 | Marketing Site | Vercel | Free (Hobby) |
-| Domain (dvaar.io) | Varies | ~$12/yr |
-| Domain (dvaar.app) | Varies | ~$15/yr |
-| **Total** | | **~€17/mo** |
+| Domain (dvaar.io) | Varies | ~$12/yr (~€1/mo) |
+| Domain (dvaar.app) | Varies | ~$15/yr (~€1.25/mo) |
+| **Total** | | **~€20/mo** |
+
+> **Note**: Hetzner prices are approximate and may vary. All servers include 20TB traffic/month which is more than sufficient for most use cases.
 
 ---
 

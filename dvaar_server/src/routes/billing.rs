@@ -28,7 +28,7 @@ pub fn router() -> Router<AppState> {
 /// Request body for creating checkout session
 #[derive(Debug, Deserialize)]
 struct CreateCheckoutRequest {
-    plan: String, // "pro" or "team"
+    plan: String, // "hobby" or "pro"
 }
 
 /// Response for checkout session
@@ -419,11 +419,46 @@ async fn handle_payment_failed(state: &AppState, invoice: &serde_json::Value) {
     tracing::warn!("Payment failed for customer: {}", customer_id);
 }
 
-async fn determine_plan_from_subscription(_subscription_id: &str) -> Option<String> {
-    // In production, fetch subscription from Stripe API and check price ID
-    // to determine if it's hobby or pro based on the price_id
-    // For now, default to hobby (the most common paid plan)
-    Some("hobby".to_string())
+async fn determine_plan_from_subscription(subscription_id: &str) -> Option<String> {
+    let stripe_key = std::env::var("STRIPE_SECRET_KEY").ok()?;
+    let hobby_price_id = std::env::var("STRIPE_HOBBY_PRICE_ID").unwrap_or_default();
+    let pro_price_id = std::env::var("STRIPE_PRO_PRICE_ID").unwrap_or_default();
+
+    // Fetch subscription from Stripe API
+    let client = reqwest::Client::new();
+    let response: serde_json::Value = match client
+        .get(format!("{}/subscriptions/{}", STRIPE_API_URL, subscription_id))
+        .basic_auth(&stripe_key, None::<&str>)
+        .send()
+        .await
+    {
+        Ok(resp) => match resp.json().await {
+            Ok(json) => json,
+            Err(e) => {
+                tracing::error!("Failed to parse Stripe subscription response: {}", e);
+                return Some("hobby".to_string()); // Default fallback
+            }
+        },
+        Err(e) => {
+            tracing::error!("Failed to fetch Stripe subscription: {}", e);
+            return Some("hobby".to_string()); // Default fallback
+        }
+    };
+
+    // Extract price ID from the subscription's first item
+    let price_id = response["items"]["data"][0]["price"]["id"]
+        .as_str()
+        .unwrap_or("");
+
+    // Determine plan based on price ID
+    if !pro_price_id.is_empty() && price_id == pro_price_id {
+        Some("pro".to_string())
+    } else if !hobby_price_id.is_empty() && price_id == hobby_price_id {
+        Some("hobby".to_string())
+    } else {
+        tracing::warn!("Unknown price ID: {}, defaulting to hobby", price_id);
+        Some("hobby".to_string())
+    }
 }
 
 fn verify_webhook_signature(payload: &str, signature: &str, secret: &str) -> bool {
