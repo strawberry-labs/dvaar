@@ -65,6 +65,7 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/health", get(health_check))
         .route("/api/health", get(health_check))
+        .route("/_caddy/check", get(caddy_check))
         .merge(routes::auth::router())
         .merge(routes::billing::router())
         .merge(routes::tunnel::router())
@@ -110,6 +111,33 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// Caddy on-demand TLS check - validates subdomain before cert provisioning
+async fn caddy_check(
+    State(state): State<routes::AppState>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let domain = match params.get("domain") {
+        Some(d) => d,
+        None => return StatusCode::BAD_REQUEST,
+    };
+
+    // Extract subdomain from domain (e.g., "foo.dvaar.app" -> "foo")
+    let subdomain = domain
+        .strip_suffix(&format!(".{}", state.config.tunnel_domain))
+        .unwrap_or(domain);
+
+    // Check if tunnel exists for this subdomain
+    if state.tunnels.contains_key(subdomain) {
+        StatusCode::OK
+    } else {
+        // Also check Redis for tunnels on other nodes
+        match state.route_manager.get_route(subdomain).await {
+            Ok(Some(_)) => StatusCode::OK,
+            _ => StatusCode::NOT_FOUND,
+        }
+    }
 }
 
 /// Health check endpoint

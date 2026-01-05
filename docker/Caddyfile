@@ -4,6 +4,13 @@
 # TUNNEL_DOMAIN: dvaar.app (user tunnel URLs)
 # =============================================================================
 
+# Global options - enable on-demand TLS for tunnel subdomains
+{
+    on_demand_tls {
+        ask http://dvaar:8080/_caddy/check
+    }
+}
+
 # API endpoint (api.dvaar.io)
 api.{$BASE_DOMAIN:dvaar.io} {
     reverse_proxy dvaar:8080
@@ -19,8 +26,12 @@ dash.{$BASE_DOMAIN:dvaar.io} {
     reverse_proxy dvaar:8080
 }
 
-# Wildcard for tunnel subdomains (*.dvaar.app)
-*.{$TUNNEL_DOMAIN:dvaar.app} {
+# On-demand TLS for tunnel subdomains (*.dvaar.app)
+# Certs are provisioned per-subdomain using HTTP-01 challenge
+https://*.{$TUNNEL_DOMAIN:dvaar.app} {
+    tls {
+        on_demand
+    }
     reverse_proxy dvaar:8080
 }
 
