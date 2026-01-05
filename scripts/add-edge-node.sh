@@ -34,15 +34,18 @@ CONTROL_PLANE_IP="$NODE_IP"
 log "Adding edge node: $NEW_SERVER_IP"
 log "Control plane: $CONTROL_PLANE_IP"
 
+# SSH options to auto-accept new host keys
+SSH_OPTS="-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
+
 # Verify SSH connection first
 log "Verifying SSH connection..."
-if ! ssh -i "$SSH_KEY" -o ConnectTimeout=10 -o BatchMode=yes "root@$NEW_SERVER_IP" "echo 'SSH OK'" &>/dev/null; then
+if ! ssh -i "$SSH_KEY" $SSH_OPTS "root@$NEW_SERVER_IP" "echo 'SSH OK'" &>/dev/null; then
     error "Cannot connect to $NEW_SERVER_IP. Check SSH key and ensure server is accessible."
 fi
 
 # Copy setup script and run on remote
 log "Configuring edge node..."
-ssh -i "$SSH_KEY" "root@$NEW_SERVER_IP" bash << EOF
+ssh -i "$SSH_KEY" $SSH_OPTS "root@$NEW_SERVER_IP" bash << EOF
 set -e
 
 echo "[+] Installing dependencies..."
