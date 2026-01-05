@@ -50,7 +50,7 @@ pub fn ensure_dirs() -> Result<()> {
 }
 
 /// Main configuration file structure
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// Authentication token
     pub authtoken: Option<String>,
@@ -62,6 +62,15 @@ pub struct Config {
 
 fn default_server_url() -> String {
     "https://api.dvaar.io".to_string()
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            authtoken: None,
+            server_url: default_server_url(),
+        }
+    }
 }
 
 impl Config {
