@@ -290,17 +290,32 @@ Create two edge servers in different locations for geographic distribution:
   ssh root@CONTROL_PLANE_IP
   ```
 
-### 7.2 Run Setup Script
-- [ ] Set environment variables
+### 7.2 Copy Scripts to Server
+Since the repo is private, copy the scripts from your local machine:
+
+- [ ] From your **local machine** (not the server):
+  ```bash
+  # Copy setup scripts to server
+  scp scripts/setup-server.sh root@CONTROL_PLANE_IP:/tmp/
+  scp scripts/add-edge-node.sh root@CONTROL_PLANE_IP:/tmp/
+  ```
+
+### 7.3 Run Setup Script
+- [ ] SSH into the server:
+  ```bash
+  ssh root@CONTROL_PLANE_IP
+  ```
+
+- [ ] Set environment variables:
   ```bash
   export GITHUB_REPO="YOUR_USERNAME/dvaar"
   export BASE_DOMAIN="dvaar.io"
   export TUNNEL_DOMAIN="dvaar.app"
   ```
 
-- [ ] Run the setup script
+- [ ] Run the setup script:
   ```bash
-  curl -sSL "https://raw.githubusercontent.com/${GITHUB_REPO}/main/scripts/setup-server.sh" | bash -s -- control-plane
+  bash /tmp/setup-server.sh control-plane
   ```
 
 - [ ] **IMPORTANT**: Save the generated secrets displayed at the end:
@@ -310,7 +325,7 @@ Create two edge servers in different locations for geographic distribution:
   ADMIN_TOKEN=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
   ```
 
-### 7.3 Configure GitHub OAuth
+### 7.4 Configure GitHub OAuth
 - [ ] Edit the environment file
   ```bash
   nano /opt/dvaar/.env
@@ -324,7 +339,7 @@ Create two edge servers in different locations for geographic distribution:
 
 - [ ] Save and exit (Ctrl+X, Y, Enter)
 
-### 7.4 Verify Configuration
+### 7.5 Verify Configuration
 - [ ] Check .env file has all required values:
   ```bash
   cat /opt/dvaar/.env | grep -E "^[A-Z]"
@@ -473,10 +488,10 @@ Now that the control plane is running, set up the two edge nodes.
   ssh root@CONTROL_PLANE_IP
   ```
 
-- [ ] Run add-edge-node script:
+- [ ] Run add-edge-node script (already copied in Phase 7.2):
   ```bash
   cd /opt/dvaar
-  curl -sSL "https://raw.githubusercontent.com/YOUR_USERNAME/dvaar/main/scripts/add-edge-node.sh" -o add-edge-node.sh
+  cp /tmp/add-edge-node.sh .
   chmod +x add-edge-node.sh
   ./add-edge-node.sh EDGE_NODE_1_IP
   ```
