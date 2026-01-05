@@ -254,14 +254,17 @@ Create two edge servers in different locations for geographic distribution:
 
 ### 6.2 Configure dvaar.app DNS Records
 - [ ] Navigate to DNS settings for `dvaar.app`
-- [ ] Add the following A records:
+- [ ] **For initial setup** (control plane only), add:
 
 | Type | Name | Value | Proxy | TTL |
 |------|------|-------|-------|-----|
 | A | `@` | CONTROL_PLANE_IP | **OFF** | Auto |
 | A | `*` | CONTROL_PLANE_IP | **OFF** | Auto |
 
-> **IMPORTANT**: dvaar.app must have proxy DISABLED (DNS only / gray cloud in Cloudflare). WebSocket connections require direct access.
+> **IMPORTANT**:
+> - Proxy must be **DISABLED** (DNS only / gray cloud in Cloudflare) - WebSockets need direct access
+> - This points all traffic to control plane initially
+> - After setting up edge nodes (Phase 11), update DNS to include all nodes for load distribution
 
 ### 6.3 Verify DNS Propagation
 - [ ] Wait 5-10 minutes for propagation
@@ -504,20 +507,33 @@ Now that the control plane is running, set up the two edge nodes.
   ```
 - [ ] Click **"Add variable"**
 
-### 11.5 Update DNS for Load Balancing (Optional)
-For traffic distribution across edge nodes, you have two options:
+### 11.5 Update DNS for Load Balancing
 
-#### Option A: Round-Robin DNS
-- [ ] Add multiple A records for `*.dvaar.app`:
+> **IMPORTANT**: Without this step, all traffic goes to control plane and edge nodes are unused!
+
+#### Option A: Round-Robin DNS (Simple, Free)
+- [ ] Update DNS records for `*.dvaar.app` to include all nodes:
   ```
+  A  @  CONTROL_PLANE_IP
+  A  @  EDGE_NODE_1_IP
+  A  @  EDGE_NODE_2_IP
   A  *  CONTROL_PLANE_IP
   A  *  EDGE_NODE_1_IP
   A  *  EDGE_NODE_2_IP
   ```
+- DNS will rotate between all IPs (not geo-aware, but distributes load)
 
-#### Option B: GeoDNS (Recommended for production)
-- [ ] Use Cloudflare Load Balancing or AWS Route 53 for geographic routing
-- [ ] Route users to nearest edge node based on location
+#### Option B: Cloudflare Load Balancing (~$5/mo)
+- [ ] Go to Cloudflare → Traffic → Load Balancing
+- [ ] Create a pool with all three server IPs
+- [ ] Enable health checks (HTTP to `/health`)
+- [ ] Create load balancer for `*.dvaar.app`
+- [ ] Set steering policy to "Geo" or "Dynamic"
+- Provides automatic failover + geographic routing
+
+#### Option C: Keep Control Plane Only (Not recommended)
+- Skip this step if you want all traffic through control plane
+- Edge nodes will only be used for tunnels that explicitly connect to them
 
 ### 11.6 Verify Edge Nodes
 - [ ] Test health on each edge node:
