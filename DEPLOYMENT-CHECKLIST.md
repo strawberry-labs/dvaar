@@ -56,13 +56,15 @@ Complete guide to deploying Dvaar from zero to production.
 - [ ] Check **"Allow GitHub Actions to create and approve pull requests"**
 - [ ] Click **Save**
 
-### 2.4 Create Production Environment
+### 2.4 Create Production Environment (Optional)
 - [ ] Go to repository **Settings** → **Environments**
 - [ ] Click **"New environment"**
 - [ ] Name: `production`
 - [ ] Click **"Configure environment"**
-- [ ] (Optional) Enable "Required reviewers" for deployment approval
-- [ ] Click **"Save protection rules"**
+- [ ] (Optional, paid plans only) Enable "Required reviewers" for deployment approval
+- [ ] Can restrict deployment to specific branches (e.g., `main` only)
+
+> **Note**: Environment protection rules like "Required reviewers" require GitHub Team or Enterprise. On the free plan, you still get environment secrets/variables which is sufficient.
 
 ---
 
@@ -97,34 +99,56 @@ Complete guide to deploying Dvaar from zero to production.
 
 ---
 
-## Phase 4: Hetzner Server Provisioning
+## Phase 4: SSH Deploy Key Setup
 
-### 4.1 Create Hetzner Account
+> **IMPORTANT**: Create dedicated deploy keys - never use personal SSH keys for deployment.
+
+### 4.1 Generate Deploy Key
+- [ ] On your **local machine**, generate a new key pair:
+  ```bash
+  # Generate deploy key (no passphrase for CI/CD automation)
+  ssh-keygen -t ed25519 -C "dvaar-deploy" -f ~/.ssh/dvaar_deploy -N ""
+
+  # This creates two files:
+  # ~/.ssh/dvaar_deploy      (private key - goes in GitHub secrets)
+  # ~/.ssh/dvaar_deploy.pub  (public key - goes on Hetzner + servers)
+  ```
+
+### 4.2 View Public Key
+- [ ] Copy your public key (you'll need this for Hetzner):
+  ```bash
+  cat ~/.ssh/dvaar_deploy.pub
+  ```
+
+### 4.3 Security Notes
+- [ ] Store deploy key backup in password manager (1Password, Bitwarden, etc.)
+- [ ] Never commit keys to git
+- [ ] Set reminder to rotate keys every 6-12 months
+
+---
+
+## Phase 5: Hetzner Server Provisioning
+
+### 5.1 Create Hetzner Account
 - [ ] Go to [accounts.hetzner.com](https://accounts.hetzner.com)
 - [ ] Sign up or log in
 - [ ] Add payment method
 - [ ] Go to [console.hetzner.cloud](https://console.hetzner.cloud)
 
-### 4.2 Create Project
+### 5.2 Create Project
 - [ ] Click **"+ New Project"**
 - [ ] Name: `dvaar`
 - [ ] Click **"Add project"**
 - [ ] Click into the project
 
-### 4.3 Add SSH Key
+### 5.3 Add SSH Key
 - [ ] Go to **Security** → **SSH Keys**
 - [ ] Click **"Add SSH Key"**
-- [ ] Paste your deploy key public key (created in Phase 7):
-  ```bash
-  # Get your deploy key public key (run locally)
-  cat ~/.ssh/dvaar_deploy.pub
-  ```
+- [ ] Paste your deploy key public key (from Phase 4.2)
 - [ ] Name: `dvaar-deploy`
 - [ ] Click **"Add SSH Key"**
 
-> **Note**: If you haven't created your deploy key yet, skip to Phase 7 first, then come back here.
-
-### 4.4 Create Control Plane Server
+### 5.4 Create Control Plane Server
 - [ ] Click **"Add Server"**
 - [ ] **Location**: Choose based on your primary user base
   | Location | Code | Best For |
@@ -150,7 +174,7 @@ Complete guide to deploying Dvaar from zero to production.
 - [ ] **Name**: `dvaar-control`
 - [ ] Click **"Create & Buy now"**
 
-### 4.5 Create Edge Node Servers (2 nodes)
+### 5.5 Create Edge Node Servers (2 nodes)
 
 Create two edge servers in different locations for geographic distribution:
 
@@ -182,7 +206,7 @@ Create two edge servers in different locations for geographic distribution:
 - [ ] **Name**: `dvaar-edge-2`
 - [ ] Click **"Create & Buy now"**
 
-### 4.6 Record All Server IPs
+### 5.6 Record All Server IPs
 - [ ] Wait for all servers to be "Running" (1-2 minutes each)
 - [ ] Record all IPv4 addresses:
   ```
@@ -191,7 +215,7 @@ Create two edge servers in different locations for geographic distribution:
   Edge Node 2 IP:   zzz.zzz.zzz.zzz  (dvaar-edge-2)
   ```
 
-### 4.7 Verify SSH Access to All Servers
+### 5.7 Verify SSH Access to All Servers
 - [ ] Test SSH to control plane
   ```bash
   ssh -i ~/.ssh/dvaar_deploy root@CONTROL_PLANE_IP
@@ -212,9 +236,9 @@ Create two edge servers in different locations for geographic distribution:
 
 ---
 
-## Phase 5: DNS Configuration
+## Phase 6: DNS Configuration
 
-### 5.1 Configure dvaar.io DNS Records
+### 6.1 Configure dvaar.io DNS Records
 - [ ] Log into your DNS provider (Cloudflare, Namecheap, etc.)
 - [ ] Navigate to DNS settings for `dvaar.io`
 - [ ] Add the following records:
@@ -228,7 +252,7 @@ Create two edge servers in different locations for geographic distribution:
 
 > **Note**: Root domain (`dvaar.io`) points to Vercel for the marketing site. Subdomains point to your server. Docs and blog are at `dvaar.io/docs` and `dvaar.io/blog` (handled by Vercel).
 
-### 5.2 Configure dvaar.app DNS Records
+### 6.2 Configure dvaar.app DNS Records
 - [ ] Navigate to DNS settings for `dvaar.app`
 - [ ] Add the following A records:
 
@@ -239,7 +263,7 @@ Create two edge servers in different locations for geographic distribution:
 
 > **IMPORTANT**: dvaar.app must have proxy DISABLED (DNS only / gray cloud in Cloudflare). WebSocket connections require direct access.
 
-### 5.3 Verify DNS Propagation
+### 6.3 Verify DNS Propagation
 - [ ] Wait 5-10 minutes for propagation
 - [ ] Verify records:
   ```bash
@@ -255,15 +279,15 @@ Create two edge servers in different locations for geographic distribution:
 
 ---
 
-## Phase 6: Server Setup
+## Phase 7: Server Setup
 
-### 6.1 SSH into Control Plane
+### 7.1 SSH into Control Plane
 - [ ] Connect to server
   ```bash
   ssh root@CONTROL_PLANE_IP
   ```
 
-### 6.2 Run Setup Script
+### 7.2 Run Setup Script
 - [ ] Set environment variables
   ```bash
   export GITHUB_REPO="YOUR_USERNAME/dvaar"
@@ -283,7 +307,7 @@ Create two edge servers in different locations for geographic distribution:
   ADMIN_TOKEN=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
   ```
 
-### 6.3 Configure GitHub OAuth
+### 7.3 Configure GitHub OAuth
 - [ ] Edit the environment file
   ```bash
   nano /opt/dvaar/.env
@@ -297,7 +321,7 @@ Create two edge servers in different locations for geographic distribution:
 
 - [ ] Save and exit (Ctrl+X, Y, Enter)
 
-### 6.4 Verify Configuration
+### 7.4 Verify Configuration
 - [ ] Check .env file has all required values:
   ```bash
   cat /opt/dvaar/.env | grep -E "^[A-Z]"
@@ -316,44 +340,9 @@ Create two edge servers in different locations for geographic distribution:
 
 ---
 
-## Phase 7: SSH Deploy Key Setup
+## Phase 8: Configure GitHub Secrets
 
-> **IMPORTANT**: Never use your personal SSH keys for deployment. Create dedicated deploy keys for security and easy rotation.
-
-### 7.1 Generate Dedicated Deploy Key
-- [ ] On your **local machine** (not the server), generate a new key pair:
-  ```bash
-  # Generate deploy key (no passphrase for CI/CD automation)
-  ssh-keygen -t ed25519 -C "dvaar-deploy" -f ~/.ssh/dvaar_deploy -N ""
-
-  # This creates two files:
-  # ~/.ssh/dvaar_deploy      (private key - goes in GitHub secrets)
-  # ~/.ssh/dvaar_deploy.pub  (public key - goes on servers)
-  ```
-
-### 7.2 Add Public Key to Servers
-- [ ] Copy the public key to your control plane:
-  ```bash
-  # Copy public key to control plane
-  ssh-copy-id -i ~/.ssh/dvaar_deploy.pub root@CONTROL_PLANE_IP
-
-  # Or manually add to authorized_keys:
-  cat ~/.ssh/dvaar_deploy.pub | ssh root@CONTROL_PLANE_IP "cat >> ~/.ssh/authorized_keys"
-  ```
-
-- [ ] Verify key-based access works:
-  ```bash
-  ssh -i ~/.ssh/dvaar_deploy root@CONTROL_PLANE_IP "echo 'Deploy key works!'"
-  ```
-
-### 7.3 Add Deploy Key to Server for Edge Nodes
-- [ ] Copy the deploy key to the control plane (for add-edge-node.sh):
-  ```bash
-  scp ~/.ssh/dvaar_deploy root@CONTROL_PLANE_IP:~/.ssh/dvaar_deploy
-  ssh root@CONTROL_PLANE_IP "chmod 600 ~/.ssh/dvaar_deploy"
-  ```
-
-### 7.4 Configure GitHub Secrets
+### 8.1 Add SSH Private Key
 - [ ] Go to repository **Settings** → **Secrets and variables** → **Actions**
 - [ ] Click **"New repository secret"**
 - [ ] Name: `SSH_PRIVATE_KEY`
@@ -364,27 +353,22 @@ Create two edge servers in different locations for geographic distribution:
   ```
 - [ ] Click **"Add secret"**
 
+### 8.2 Add Control Plane Host
 - [ ] Click **"New repository secret"**
 - [ ] Name: `CONTROL_PLANE_HOST`
-- [ ] Value: Your control plane IP address
+- [ ] Value: Your control plane IP address (from Phase 5.6)
 - [ ] Click **"Add secret"**
 
-### 7.5 Verify Secrets
+### 8.3 Verify Secrets
 - [ ] Confirm secrets are listed:
   - `SSH_PRIVATE_KEY`
   - `CONTROL_PLANE_HOST`
 
-### 7.6 Security Best Practices
-- [ ] Store deploy key backup in password manager (1Password, Bitwarden, etc.)
-- [ ] Set calendar reminder to rotate keys every 6-12 months
-- [ ] Never commit keys to git (they're in .gitignore)
-- [ ] If key is compromised: regenerate, update GitHub secret, update all servers
-
 ---
 
-## Phase 8: Initial Deployment
+## Phase 9: Initial Deployment
 
-### 8.1 Trigger CI/CD Pipeline
+### 9.1 Trigger CI/CD Pipeline
 - [ ] From your local machine:
   ```bash
   cd /path/to/dvaar
@@ -392,13 +376,13 @@ Create two edge servers in different locations for geographic distribution:
   git push
   ```
 
-### 8.2 Monitor Build
+### 9.2 Monitor Build
 - [ ] Go to repository → **Actions** tab
 - [ ] Click on the running workflow
 - [ ] Watch "Build" job (first build takes ~5-7 minutes)
 - [ ] Watch "Deploy to Control Plane" job
 
-### 8.3 Verify Deployment on Server
+### 9.3 Verify Deployment on Server
 - [ ] SSH into server
   ```bash
   ssh root@CONTROL_PLANE_IP
@@ -423,9 +407,9 @@ Create two edge servers in different locations for geographic distribution:
 
 ---
 
-## Phase 9: Verification
+## Phase 10: Verification
 
-### 9.1 Test Health Endpoint
+### 10.1 Test Health Endpoint
 - [ ] Test API health
   ```bash
   curl -s https://api.dvaar.io/api/health | jq
@@ -441,20 +425,20 @@ Create two edge servers in different locations for geographic distribution:
   }
   ```
 
-### 9.2 Test Admin Access
+### 10.2 Test Admin Access
 - [ ] Test admin metrics (use your ADMIN_TOKEN)
   ```bash
   curl -s -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
     https://admin.dvaar.io/api/metrics | jq
   ```
 
-### 9.3 Test OAuth Flow
+### 10.3 Test OAuth Flow
 - [ ] Open browser to `https://api.dvaar.io/api/auth/github`
 - [ ] Should redirect to GitHub authorization page
 - [ ] Authorize the app
 - [ ] Should redirect back with user info or token
 
-### 9.4 Test SSL Certificates
+### 10.4 Test SSL Certificates
 - [ ] Verify HTTPS is working
   ```bash
   curl -I https://api.dvaar.io/api/health
@@ -469,18 +453,18 @@ Create two edge servers in different locations for geographic distribution:
 
 ---
 
-## Phase 10: Edge Node Setup
+## Phase 11: Edge Node Setup
 
 Now that the control plane is running, set up the two edge nodes.
 
-### 10.1 Copy Deploy Key to Control Plane
+### 11.1 Copy Deploy Key to Control Plane
 - [ ] From your local machine, copy the deploy key:
   ```bash
   scp ~/.ssh/dvaar_deploy root@CONTROL_PLANE_IP:~/.ssh/dvaar_deploy
   ssh root@CONTROL_PLANE_IP "chmod 600 ~/.ssh/dvaar_deploy"
   ```
 
-### 10.2 Set Up Edge Node 1
+### 11.2 Set Up Edge Node 1
 - [ ] SSH into control plane:
   ```bash
   ssh root@CONTROL_PLANE_IP
@@ -499,7 +483,7 @@ Now that the control plane is running, set up the two edge nodes.
   ssh -i ~/.ssh/dvaar_deploy root@EDGE_NODE_1_IP "cd /opt/dvaar && docker compose ps"
   ```
 
-### 10.3 Set Up Edge Node 2
+### 11.3 Set Up Edge Node 2
 - [ ] From control plane, run:
   ```bash
   ./add-edge-node.sh EDGE_NODE_2_IP
@@ -510,7 +494,7 @@ Now that the control plane is running, set up the two edge nodes.
   ssh -i ~/.ssh/dvaar_deploy root@EDGE_NODE_2_IP "cd /opt/dvaar && docker compose ps"
   ```
 
-### 10.4 Configure GitHub Actions for Edge Nodes
+### 11.4 Configure GitHub Actions for Edge Nodes
 - [ ] Go to repository **Settings** → **Variables** → **Actions**
 - [ ] Click **"New repository variable"**
 - [ ] Name: `EDGE_NODES`
@@ -520,7 +504,7 @@ Now that the control plane is running, set up the two edge nodes.
   ```
 - [ ] Click **"Add variable"**
 
-### 10.5 Update DNS for Load Balancing (Optional)
+### 11.5 Update DNS for Load Balancing (Optional)
 For traffic distribution across edge nodes, you have two options:
 
 #### Option A: Round-Robin DNS
@@ -535,7 +519,7 @@ For traffic distribution across edge nodes, you have two options:
 - [ ] Use Cloudflare Load Balancing or AWS Route 53 for geographic routing
 - [ ] Route users to nearest edge node based on location
 
-### 10.6 Verify Edge Nodes
+### 11.6 Verify Edge Nodes
 - [ ] Test health on each edge node:
   ```bash
   curl -s https://api.dvaar.io/api/health | jq  # Control plane
@@ -547,9 +531,9 @@ For traffic distribution across edge nodes, you have two options:
 
 ---
 
-## Phase 11: CLI Setup (Optional - For Testing)
+## Phase 12: CLI Setup (Optional - For Testing)
 
-### 11.1 Build CLI Locally
+### 12.1 Build CLI Locally
 - [ ] Build release binary
   ```bash
   cd /path/to/dvaar
@@ -563,7 +547,7 @@ For traffic distribution across edge nodes, you have two options:
   cp target/release/dvaar ~/.local/bin/
   ```
 
-### 11.2 Test CLI Login (Device Flow)
+### 12.2 Test CLI Login (Device Flow)
 - [ ] Run login command
   ```bash
   dvaar login
@@ -583,7 +567,7 @@ For traffic distribution across edge nodes, you have two options:
 - [ ] Authorize the Dvaar app
 - [ ] Terminal shows: `Logged in as your@email.com`
 
-### 11.3 Test Tunnel
+### 12.3 Test Tunnel
 - [ ] Start a local server
   ```bash
   python3 -m http.server 8000 &
@@ -602,18 +586,18 @@ For traffic distribution across edge nodes, you have two options:
 
 ---
 
-## Phase 12: Vercel Deployment (Marketing Site)
+## Phase 13: Vercel Deployment (Marketing Site)
 
 The main site (`dvaar.io`) with docs and blog is deployed separately on Vercel.
 
-### 12.1 Create Vercel Project
+### 13.1 Create Vercel Project
 - [ ] Go to [vercel.com](https://vercel.com) and sign in
 - [ ] Click **"Add New..."** → **"Project"**
 - [ ] Import your `dvaar_site` repository (or create one)
 - [ ] Framework Preset: **Next.js**
 - [ ] Click **"Deploy"**
 
-### 12.2 Configure Custom Domain
+### 13.2 Configure Custom Domain
 - [ ] Go to Project **Settings** → **Domains**
 - [ ] Add domain: `dvaar.io`
 - [ ] Vercel will show you the required DNS records
@@ -623,7 +607,7 @@ The main site (`dvaar.io`) with docs and blog is deployed separately on Vercel.
   ```
 - [ ] Wait for SSL certificate provisioning
 
-### 12.3 Site Structure
+### 13.3 Site Structure
 The NextJS site should have these routes:
 
 | Path | Content |
@@ -635,21 +619,21 @@ The NextJS site should have these routes:
 | `/blog/*` | Individual blog posts |
 | `/pricing` | Pricing page |
 
-### 12.4 Verify Deployment
+### 13.4 Verify Deployment
 - [ ] Check main site: `https://dvaar.io`
 - [ ] Check docs: `https://dvaar.io/docs`
 - [ ] Check blog: `https://dvaar.io/blog`
 
 ---
 
-## Phase 13: Stripe Integration
+## Phase 14: Stripe Integration
 
-### 13.1 Create Stripe Account
+### 14.1 Create Stripe Account
 - [ ] Go to [dashboard.stripe.com](https://dashboard.stripe.com)
 - [ ] Sign up or log in
 - [ ] Complete business verification (required for live mode)
 
-### 13.2 Create Products and Prices
+### 14.2 Create Products and Prices
 - [ ] Go to **Products** → **Add product**
 - [ ] Create **Hobby** product:
   - Name: `Hobby`
@@ -671,7 +655,7 @@ The NextJS site should have these routes:
     STRIPE_PRO_PRICE_ID=price_xxxxxxxxxxxxxxxxxx
     ```
 
-### 13.3 Get API Keys
+### 14.3 Get API Keys
 - [ ] Go to **Developers** → **API keys**
 - [ ] Copy **Secret key** (starts with `sk_live_` or `sk_test_`)
   ```
@@ -680,7 +664,7 @@ The NextJS site should have these routes:
 
 > **Note**: Use `sk_test_` keys for testing, `sk_live_` for production.
 
-### 13.4 Configure Webhook
+### 14.4 Configure Webhook
 - [ ] Go to **Developers** → **Webhooks**
 - [ ] Click **Add endpoint**
 - [ ] Endpoint URL: `https://api.dvaar.io/api/billing/webhook`
@@ -696,7 +680,7 @@ The NextJS site should have these routes:
   STRIPE_WEBHOOK_SECRET=whsec_xxxxxxxxxxxxxxxxxx
   ```
 
-### 13.5 Configure Customer Portal
+### 14.5 Configure Customer Portal
 - [ ] Go to **Settings** → **Billing** → **Customer portal**
 - [ ] Enable the portal
 - [ ] Configure allowed actions:
@@ -705,7 +689,7 @@ The NextJS site should have these routes:
   - [x] Allow customers to update payment methods
 - [ ] Click **Save**
 
-### 13.6 Add Stripe Secrets to Server
+### 14.6 Add Stripe Secrets to Server
 - [ ] SSH into server
   ```bash
   ssh root@CONTROL_PLANE_IP
@@ -732,7 +716,7 @@ The NextJS site should have these routes:
   docker compose restart dvaar
   ```
 
-### 13.7 Verify Stripe Integration
+### 14.7 Verify Stripe Integration
 - [ ] Test webhook endpoint
   ```bash
   curl -X POST https://api.dvaar.io/api/billing/webhook \
@@ -762,7 +746,7 @@ The NextJS site should have these routes:
   # Should open Stripe checkout page in browser
   ```
 
-### 13.8 Test Webhook (Stripe CLI - Optional)
+### 14.8 Test Webhook (Stripe CLI - Optional)
 - [ ] Install Stripe CLI: [stripe.com/docs/stripe-cli](https://stripe.com/docs/stripe-cli)
 - [ ] Login: `stripe login`
 - [ ] Forward webhooks to local:
