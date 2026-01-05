@@ -16,7 +16,7 @@ use tokio::sync::oneshot;
 /// Build the internal proxy router
 pub fn router() -> Router<AppState> {
     Router::new().route("/_internal/proxy", any(handle_internal_proxy))
-    .route("/_internal/proxy/*path", any(handle_internal_proxy))
+    .route("/_internal/proxy/{*path}", any(handle_internal_proxy))
 }
 
 /// Handle internal proxy request from another node
