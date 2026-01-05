@@ -24,6 +24,12 @@ impl RouteManager {
         Self { client }
     }
 
+    /// Ping Redis to check connection
+    pub async fn ping(&self) -> anyhow::Result<()> {
+        self.client.ping::<()>(None).await?;
+        Ok(())
+    }
+
     /// Register a route for a subdomain
     pub async fn register_route(
         &self,

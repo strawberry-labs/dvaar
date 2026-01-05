@@ -64,6 +64,7 @@ async fn main() -> anyhow::Result<()> {
     // Build main router (public port)
     let app = Router::new()
         .route("/health", get(health_check))
+        .route("/api/health", get(health_check))
         .merge(routes::auth::router())
         .merge(routes::billing::router())
         .merge(routes::tunnel::router())
@@ -112,8 +113,34 @@ async fn main() -> anyhow::Result<()> {
 }
 
 /// Health check endpoint
-async fn health_check() -> impl IntoResponse {
-    (StatusCode::OK, "OK")
+async fn health_check(State(state): State<routes::AppState>) -> impl IntoResponse {
+    let db_status = sqlx::query("SELECT 1")
+        .fetch_one(&state.db)
+        .await
+        .map(|_| "ok")
+        .unwrap_or("error");
+
+    let redis_status = state
+        .route_manager
+        .ping()
+        .await
+        .map(|_| "ok")
+        .unwrap_or("error");
+
+    let tunnels = state.tunnels.len();
+
+    let status = if db_status == "ok" && redis_status == "ok" {
+        "healthy"
+    } else {
+        "degraded"
+    };
+
+    axum::Json(serde_json::json!({
+        "status": status,
+        "db": db_status,
+        "redis": redis_status,
+        "tunnels": tunnels
+    }))
 }
 
 /// Fallback handler - routes to admin or ingress based on domain
