@@ -438,13 +438,15 @@ async fn determine_plan_from_subscription(subscription_id: &str) -> Option<Strin
         Ok(resp) => match resp.json().await {
             Ok(json) => json,
             Err(e) => {
+                // SECURITY: Default to free on parse errors - don't grant paid access on failures
                 tracing::error!("Failed to parse Stripe subscription response: {}", e);
-                return Some("hobby".to_string()); // Default fallback
+                return Some("free".to_string());
             }
         },
         Err(e) => {
+            // SECURITY: Default to free on API errors - don't grant paid access on failures
             tracing::error!("Failed to fetch Stripe subscription: {}", e);
-            return Some("hobby".to_string()); // Default fallback
+            return Some("free".to_string());
         }
     };
 
@@ -459,10 +461,14 @@ async fn determine_plan_from_subscription(subscription_id: &str) -> Option<Strin
     } else if !hobby_price_id.is_empty() && price_id == hobby_price_id {
         Some("hobby".to_string())
     } else {
-        tracing::warn!("Unknown price ID: {}, defaulting to hobby", price_id);
-        Some("hobby".to_string())
+        // SECURITY: Unknown price ID should not grant paid access
+        tracing::warn!("Unknown price ID: {}, defaulting to free", price_id);
+        Some("free".to_string())
     }
 }
+
+/// Maximum age of webhook timestamp to accept (5 minutes)
+const WEBHOOK_TIMESTAMP_TOLERANCE_SECS: i64 = 300;
 
 fn verify_webhook_signature(payload: &str, signature: &str, secret: &str) -> bool {
     // Parse signature header
@@ -478,6 +484,26 @@ fn verify_webhook_signature(payload: &str, signature: &str, secret: &str) -> boo
         Some(t) => *t,
         None => return false,
     };
+
+    // Verify timestamp is within tolerance (prevents replay attacks)
+    let timestamp_secs: i64 = match timestamp.parse() {
+        Ok(t) => t,
+        Err(_) => {
+            tracing::warn!("Invalid webhook timestamp format");
+            return false;
+        }
+    };
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+
+    let age = now - timestamp_secs;
+    if age < 0 || age > WEBHOOK_TIMESTAMP_TOLERANCE_SECS {
+        tracing::warn!("Webhook timestamp outside tolerance: {} seconds old", age);
+        return false;
+    }
 
     let provided_sig = match parts.get("v1") {
         Some(s) => *s,
@@ -500,8 +526,17 @@ fn verify_webhook_signature(payload: &str, signature: &str, secret: &str) -> boo
     mac.update(signed_payload.as_bytes());
     let expected = hex::encode(mac.finalize().into_bytes());
 
-    // Constant-time comparison
-    expected == provided_sig
+    // Constant-time comparison using subtle crate pattern
+    // Compare byte-by-byte to avoid timing attacks
+    if expected.len() != provided_sig.len() {
+        return false;
+    }
+
+    let mut result = 0u8;
+    for (a, b) in expected.bytes().zip(provided_sig.bytes()) {
+        result |= a ^ b;
+    }
+    result == 0
 }
 
 fn extract_bearer_token(headers: &HeaderMap) -> Option<&str> {

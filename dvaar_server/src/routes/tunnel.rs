@@ -92,8 +92,16 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         }
     };
 
-    // Check rate limit for tunnel creation based on user's plan
-    let is_paid = user.is_paid();
+    // Check rate limit for tunnel creation based on user's effective plan
+    let is_paid = if let Some(expires_at) = user.plan_expires_at {
+        if expires_at < chrono::Utc::now() {
+            false // Plan has expired, treat as free
+        } else {
+            user.is_paid()
+        }
+    } else {
+        user.is_paid()
+    };
     match state.rate_limiter.check_tunnel_creation(&user.id.to_string(), is_paid).await {
         Ok(result) if !result.allowed => {
             tracing::warn!(
@@ -121,8 +129,18 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         Ok(_) => {}
     }
 
-    // Check bandwidth limit based on user's plan
-    let bandwidth_limit = match user.plan.as_str() {
+    // Check bandwidth limit based on user's effective plan (considering expiration)
+    let effective_plan = if let Some(expires_at) = user.plan_expires_at {
+        if expires_at < chrono::Utc::now() {
+            "free" // Plan has expired
+        } else {
+            user.plan.as_str()
+        }
+    } else {
+        user.plan.as_str()
+    };
+
+    let bandwidth_limit = match effective_plan {
         "pro" => constants::BANDWIDTH_PRO,
         "hobby" => constants::BANDWIDTH_HOBBY,
         _ => constants::BANDWIDTH_FREE,

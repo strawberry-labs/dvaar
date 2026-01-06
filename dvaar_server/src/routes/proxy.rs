@@ -38,13 +38,14 @@ async fn handle_internal_proxy(
     }
 
     // Get original host to determine subdomain
+    // Note: Ingress sends X-Original-Host as subdomain.tunnel_domain (e.g., foo.dvaar.app)
     let original_host = request
         .headers()
         .get(constants::ORIGINAL_HOST_HEADER)
         .and_then(|v| v.to_str().ok());
 
     let subdomain = match original_host {
-        Some(host) => extract_subdomain_from_host(host, &state.config.base_domain),
+        Some(host) => extract_subdomain_from_host(host, &state.config.tunnel_domain),
         None => {
             return (StatusCode::BAD_REQUEST, "Missing X-Original-Host header").into_response();
         }

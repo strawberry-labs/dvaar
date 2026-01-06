@@ -83,10 +83,19 @@ impl RouteManager {
         Ok(result)
     }
 
-    /// Increment bandwidth usage for a user
+    /// Increment bandwidth usage for a user (with monthly TTL for auto-reset)
     pub async fn increment_usage(&self, user_id: &str, bytes: u64) -> anyhow::Result<u64> {
         let key = format!("{}{}", constants::USAGE_PREFIX, user_id);
         let result: i64 = self.client.incr_by(&key, bytes as i64).await?;
+
+        // Set TTL to end of current month (30 days from first usage as approximation)
+        // This ensures usage resets monthly even without explicit reset job
+        let ttl: i64 = self.client.ttl(&key).await?;
+        if ttl < 0 {
+            // No TTL set yet, set 30 day TTL
+            self.client.expire::<(), _>(&key, 30 * 24 * 60 * 60, None).await?;
+        }
+
         Ok(result as u64)
     }
 
@@ -104,26 +113,66 @@ impl RouteManager {
         Ok(())
     }
 
-    /// Register this node in the cluster (uses Redis hash)
-    pub async fn register_node(&self, node_id: &str, node_info: &NodeInfo) -> anyhow::Result<()> {
-        use fred::interfaces::HashesInterface;
+    /// Store OAuth state with TTL (for CSRF protection)
+    pub async fn store_oauth_state(&self, key: &str, value: &str) -> anyhow::Result<()> {
+        self.client
+            .set::<(), _, _>(
+                key,
+                value,
+                Some(Expiration::EX(600)), // 10 minute TTL
+                None,
+                false,
+            )
+            .await?;
+        Ok(())
+    }
 
+    /// Get and delete OAuth state atomically (prevents replay attacks)
+    pub async fn get_and_delete_oauth_state(&self, key: &str) -> anyhow::Result<Option<String>> {
+        let value: Option<String> = self.client.getdel(key).await?;
+        Ok(value)
+    }
+
+    /// Register this node in the cluster (uses individual keys with TTL per node)
+    pub async fn register_node(&self, node_id: &str, node_info: &NodeInfo) -> anyhow::Result<()> {
+        let key = format!("{}:{}", constants::NODE_PREFIX, node_id);
         let value = serde_json::to_string(node_info)?;
-        self.client.hset::<(), _, _>(constants::NODE_PREFIX, (node_id, &value)).await?;
-        // Set expiry on the hash (all nodes expire together, re-register refreshes)
-        self.client.expire::<(), _>(constants::NODE_PREFIX, constants::NODE_TTL_SECONDS as i64, None).await?;
+
+        // Each node has its own key with individual TTL - stale nodes expire independently
+        self.client
+            .set::<(), _, _>(
+                &key,
+                value,
+                Some(Expiration::EX(constants::NODE_TTL_SECONDS as i64)),
+                None,
+                false,
+            )
+            .await?;
+
+        // Also add to a set for easy enumeration (set members don't have TTL issues)
+        self.client.sadd::<(), _, _>("nodes:active", node_id).await?;
+
         Ok(())
     }
 
     /// Update node's tunnel count
     pub async fn update_node_tunnels(&self, node_id: &str, tunnel_count: u32) -> anyhow::Result<()> {
-        use fred::interfaces::HashesInterface;
+        let key = format!("{}:{}", constants::NODE_PREFIX, node_id);
 
-        if let Some(json) = self.client.hget::<Option<String>, _, _>(constants::NODE_PREFIX, node_id).await? {
+        if let Some(json) = self.client.get::<Option<String>, _>(&key).await? {
             if let Ok(mut info) = serde_json::from_str::<NodeInfo>(&json) {
                 info.tunnel_count = tunnel_count;
                 let value = serde_json::to_string(&info)?;
-                self.client.hset::<(), _, _>(constants::NODE_PREFIX, (node_id, &value)).await?;
+                // Refresh TTL on update
+                self.client
+                    .set::<(), _, _>(
+                        &key,
+                        value,
+                        Some(Expiration::EX(constants::NODE_TTL_SECONDS as i64)),
+                        None,
+                        false,
+                    )
+                    .await?;
             }
         }
         Ok(())
@@ -131,14 +180,38 @@ impl RouteManager {
 
     /// Get all registered nodes
     pub async fn get_all_nodes(&self) -> anyhow::Result<Vec<NodeInfo>> {
-        use fred::interfaces::HashesInterface;
+        // Get all node IDs from the set
+        let node_ids: Vec<String> = self.client.smembers("nodes:active").await?;
 
-        let all: std::collections::HashMap<String, String> = self.client.hgetall(constants::NODE_PREFIX).await?;
-        let nodes: Vec<NodeInfo> = all
-            .values()
-            .filter_map(|json| serde_json::from_str(json).ok())
-            .collect();
+        let mut nodes = Vec::new();
+        let mut stale_nodes = Vec::new();
+
+        for node_id in node_ids {
+            let key = format!("{}:{}", constants::NODE_PREFIX, node_id);
+            if let Some(json) = self.client.get::<Option<String>, _>(&key).await? {
+                if let Ok(info) = serde_json::from_str::<NodeInfo>(&json) {
+                    nodes.push(info);
+                }
+            } else {
+                // Node key expired but still in set - mark for cleanup
+                stale_nodes.push(node_id);
+            }
+        }
+
+        // Clean up stale nodes from the set
+        for stale_id in stale_nodes {
+            let _ = self.client.srem::<(), _, _>("nodes:active", &stale_id).await;
+        }
+
         Ok(nodes)
+    }
+
+    /// Unregister this node from the cluster
+    pub async fn unregister_node(&self, node_id: &str) -> anyhow::Result<()> {
+        let key = format!("{}:{}", constants::NODE_PREFIX, node_id);
+        self.client.del::<(), _>(&key).await?;
+        self.client.srem::<(), _, _>("nodes:active", node_id).await?;
+        Ok(())
     }
 }
 

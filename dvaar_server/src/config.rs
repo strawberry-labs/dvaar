@@ -65,8 +65,23 @@ impl Config {
             public_url: env::var("PUBLIC_URL")
                 .unwrap_or_else(|_| "http://localhost:8080".to_string()),
             node_ip: env::var("NODE_IP").unwrap_or_else(|_| "127.0.0.1".to_string()),
-            cluster_secret: env::var("CLUSTER_SECRET")
-                .unwrap_or_else(|_| "dev-cluster-secret".to_string()),
+            cluster_secret: {
+                let secret = env::var("CLUSTER_SECRET")
+                    .unwrap_or_else(|_| "dev-cluster-secret".to_string());
+
+                // Warn loudly if using default secret in non-localhost environment
+                let is_prod = env::var("NODE_IP")
+                    .map(|ip| ip != "127.0.0.1" && ip != "localhost")
+                    .unwrap_or(false);
+
+                if is_prod && secret == "dev-cluster-secret" {
+                    eprintln!("⚠️  SECURITY WARNING: Using default CLUSTER_SECRET in production!");
+                    eprintln!("⚠️  Set CLUSTER_SECRET environment variable to a secure random value.");
+                    // In a stricter mode, you could return an error here instead
+                }
+
+                secret
+            },
             database_url: env::var("DATABASE_URL")
                 .map_err(|_| ConfigError::MissingEnv("DATABASE_URL"))?,
             redis_url: env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string()),

@@ -37,15 +37,22 @@ pub async fn handle_ingress(
     let subdomain = match extract_subdomain(&host, &state.config.tunnel_domain) {
         Some(s) => s,
         None => {
-            // Check X-Subdomain header for local development
-            if let Some(header_subdomain) = request
-                .headers()
-                .get(constants::SUBDOMAIN_HEADER)
-                .and_then(|v| v.to_str().ok())
-            {
-                header_subdomain.to_string()
+            // Check X-Subdomain header ONLY in development mode (localhost/127.0.0.1)
+            // This prevents host spoofing attacks in production
+            let is_local_request = host.starts_with("localhost:") || host.starts_with("127.0.0.1:");
+            if is_local_request {
+                if let Some(header_subdomain) = request
+                    .headers()
+                    .get(constants::SUBDOMAIN_HEADER)
+                    .and_then(|v| v.to_str().ok())
+                {
+                    tracing::debug!("Using X-Subdomain header for local request: {}", header_subdomain);
+                    header_subdomain.to_string()
+                } else {
+                    return (StatusCode::NOT_FOUND, "Subdomain not found").into_response();
+                }
             } else {
-                // Check if this is a custom domain (CNAME)
+                // Check if this is a custom domain (CNAME) - only for non-local requests
                 let host_without_port = host.split(':').next().unwrap_or(&host);
                 match queries::find_subdomain_by_custom_domain(&state.db, host_without_port).await {
                     Ok(Some(subdomain)) => subdomain,

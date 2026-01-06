@@ -9,8 +9,22 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use chrono::Utc;
+use dvaar_common::constants;
 use serde::Deserialize;
 use uuid::Uuid;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// OAuth state data stored in Redis
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct OAuthState {
+    nonce: String,
+    redirect_uri: Option<String>,
+    created_at: u64,
+}
+
+/// OAuth state TTL in seconds (10 minutes)
+const OAUTH_STATE_TTL: u64 = 600;
 
 /// Build the auth router
 pub fn router() -> Router<AppState> {
@@ -42,15 +56,46 @@ async fn github_redirect(
         return (StatusCode::SERVICE_UNAVAILABLE, "GitHub OAuth not configured").into_response();
     }
 
-    // Store redirect_uri in state param if provided
-    let state_param = query
-        .redirect_uri
-        .map(|uri| base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE, uri))
-        .unwrap_or_default();
+    // Generate cryptographically secure nonce for CSRF protection
+    let nonce = Uuid::new_v4().to_string();
+
+    // Validate redirect_uri if provided (must be localhost or our domain)
+    let redirect_uri = query.redirect_uri.and_then(|uri| {
+        if uri.starts_with("http://localhost:") || uri.starts_with("http://127.0.0.1:") {
+            Some(uri)
+        } else {
+            tracing::warn!("Rejected invalid redirect_uri: {}", uri);
+            None
+        }
+    });
+
+    let oauth_state = OAuthState {
+        nonce: nonce.clone(),
+        redirect_uri,
+        created_at: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    };
+
+    // Store state in Redis with TTL
+    let state_key = format!("oauth_state:{}", nonce);
+    let state_json = match serde_json::to_string(&oauth_state) {
+        Ok(j) => j,
+        Err(e) => {
+            tracing::error!("Failed to serialize OAuth state: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Internal error").into_response();
+        }
+    };
+
+    if let Err(e) = state.route_manager.store_oauth_state(&state_key, &state_json).await {
+        tracing::error!("Failed to store OAuth state in Redis: {}", e);
+        return (StatusCode::INTERNAL_SERVER_ERROR, "Internal error").into_response();
+    }
 
     let redirect_url = format!(
         "https://github.com/login/oauth/authorize?client_id={}&scope=user:email&state={}",
-        client_id, state_param
+        client_id, nonce
     );
 
     Redirect::temporary(&redirect_url).into_response()
@@ -68,6 +113,47 @@ async fn github_callback(
     State(state): State<AppState>,
     Query(query): Query<GithubCallbackQuery>,
 ) -> Response {
+    // Verify OAuth state (CSRF protection)
+    let oauth_state = match &query.state {
+        Some(nonce) if !nonce.is_empty() => {
+            let state_key = format!("oauth_state:{}", nonce);
+            match state.route_manager.get_and_delete_oauth_state(&state_key).await {
+                Ok(Some(state_json)) => {
+                    match serde_json::from_str::<OAuthState>(&state_json) {
+                        Ok(s) => {
+                            // Verify state hasn't expired (double-check beyond Redis TTL)
+                            let now = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs();
+                            if now - s.created_at > OAUTH_STATE_TTL {
+                                tracing::warn!("OAuth state expired for nonce: {}", nonce);
+                                return (StatusCode::BAD_REQUEST, "OAuth state expired").into_response();
+                            }
+                            s
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to parse OAuth state: {}", e);
+                            return (StatusCode::BAD_REQUEST, "Invalid OAuth state").into_response();
+                        }
+                    }
+                }
+                Ok(None) => {
+                    tracing::warn!("OAuth state not found (possible replay): {}", nonce);
+                    return (StatusCode::BAD_REQUEST, "Invalid or expired OAuth state").into_response();
+                }
+                Err(e) => {
+                    tracing::error!("Failed to retrieve OAuth state: {}", e);
+                    return (StatusCode::INTERNAL_SERVER_ERROR, "Internal error").into_response();
+                }
+            }
+        }
+        _ => {
+            tracing::warn!("Missing OAuth state parameter");
+            return (StatusCode::BAD_REQUEST, "Missing state parameter").into_response();
+        }
+    };
+
     // Exchange code for access token
     let token_response = match exchange_github_code(&state, &query.code).await {
         Ok(resp) => resp,
@@ -79,7 +165,11 @@ async fn github_callback(
 
     // Get user email from GitHub
     let email = match get_github_user_email(&token_response.access_token).await {
-        Ok(email) => email,
+        Ok(Some(email)) => email,
+        Ok(None) => {
+            tracing::warn!("GitHub user has no verified primary email");
+            return (StatusCode::BAD_REQUEST, "GitHub account must have a verified primary email").into_response();
+        }
         Err(e) => {
             tracing::error!("Failed to get GitHub user email: {}", e);
             return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to get user info").into_response();
@@ -102,18 +192,10 @@ async fn github_callback(
         return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to create API key").into_response();
     }
 
-    // Check if there's a redirect_uri in state
-    if let Some(state_param) = query.state {
-        if !state_param.is_empty() {
-            if let Ok(decoded) =
-                base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE, &state_param)
-            {
-                if let Ok(redirect_uri) = String::from_utf8(decoded) {
-                    let redirect_with_token = format!("{}?token={}", redirect_uri, api_token);
-                    return Redirect::temporary(&redirect_with_token).into_response();
-                }
-            }
-        }
+    // Check if there's a validated redirect_uri in state
+    if let Some(redirect_uri) = oauth_state.redirect_uri {
+        let redirect_with_token = format!("{}?token={}", redirect_uri, api_token);
+        return Redirect::temporary(&redirect_with_token).into_response();
     }
 
     // Return token as JSON if no redirect
@@ -143,12 +225,42 @@ async fn cli_auth(
         return (StatusCode::SERVICE_UNAVAILABLE, "GitHub OAuth not configured").into_response();
     }
 
-    let state_param =
-        base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE, &query.redirect_uri);
+    // Validate redirect_uri (must be localhost for CLI)
+    if !query.redirect_uri.starts_with("http://localhost:") && !query.redirect_uri.starts_with("http://127.0.0.1:") {
+        tracing::warn!("CLI auth rejected invalid redirect_uri: {}", query.redirect_uri);
+        return (StatusCode::BAD_REQUEST, "Invalid redirect_uri - must be localhost").into_response();
+    }
+
+    // Generate cryptographically secure nonce for CSRF protection
+    let nonce = Uuid::new_v4().to_string();
+
+    let oauth_state = OAuthState {
+        nonce: nonce.clone(),
+        redirect_uri: Some(query.redirect_uri),
+        created_at: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    };
+
+    // Store state in Redis with TTL
+    let state_key = format!("oauth_state:{}", nonce);
+    let state_json = match serde_json::to_string(&oauth_state) {
+        Ok(j) => j,
+        Err(e) => {
+            tracing::error!("Failed to serialize OAuth state: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Internal error").into_response();
+        }
+    };
+
+    if let Err(e) = state.route_manager.store_oauth_state(&state_key, &state_json).await {
+        tracing::error!("Failed to store OAuth state in Redis: {}", e);
+        return (StatusCode::INTERNAL_SERVER_ERROR, "Internal error").into_response();
+    }
 
     let redirect_url = format!(
         "https://github.com/login/oauth/authorize?client_id={}&scope=user:email&state={}",
-        client_id, state_param
+        client_id, nonce
     );
 
     Redirect::temporary(&redirect_url).into_response()
@@ -178,11 +290,23 @@ async fn get_user(
         }
     };
 
+    // Check if plan has expired
+    let effective_plan = if let Some(expires_at) = user.plan_expires_at {
+        if expires_at < chrono::Utc::now() {
+            "free" // Plan has expired
+        } else {
+            &user.plan
+        }
+    } else {
+        &user.plan
+    };
+
     Json(serde_json::json!({
         "id": user.id,
         "email": user.email,
         "created_at": user.created_at,
-        "plan": "free" // TODO: Implement plans
+        "plan": effective_plan,
+        "plan_expires_at": user.plan_expires_at
     }))
     .into_response()
 }
@@ -212,10 +336,29 @@ async fn get_usage(
         .await
         .unwrap_or(0);
 
+    // Check if plan has expired
+    let effective_plan = if let Some(expires_at) = user.plan_expires_at {
+        if expires_at < Utc::now() {
+            "free"
+        } else {
+            &user.plan
+        }
+    } else {
+        &user.plan
+    };
+
+    // Get bandwidth limit based on effective plan
+    let bandwidth_limit = match effective_plan {
+        "pro" => constants::BANDWIDTH_PRO,
+        "hobby" => constants::BANDWIDTH_HOBBY,
+        _ => constants::BANDWIDTH_FREE,
+    };
+
     Json(serde_json::json!({
-        "plan": "free",
+        "plan": effective_plan,
         "bandwidth_bytes": usage,
-        "bandwidth_limit": "unlimited"
+        "bandwidth_limit": bandwidth_limit,
+        "plan_expires_at": user.plan_expires_at
     }))
     .into_response()
 }
@@ -240,7 +383,11 @@ async fn exchange_token(
 ) -> Response {
     // Get user email from GitHub using the provided token
     let email = match get_github_user_email(&payload.github_token).await {
-        Ok(email) => email,
+        Ok(Some(email)) => email,
+        Ok(None) => {
+            tracing::warn!("GitHub user has no verified primary email (device flow)");
+            return (StatusCode::BAD_REQUEST, "GitHub account must have a verified primary email").into_response();
+        }
         Err(e) => {
             tracing::error!("Failed to get GitHub user email: {}", e);
             return (StatusCode::UNAUTHORIZED, "Invalid GitHub token").into_response();
@@ -322,7 +469,7 @@ struct GithubEmail {
     verified: bool,
 }
 
-async fn get_github_user_email(access_token: &str) -> Result<String, reqwest::Error> {
+async fn get_github_user_email(access_token: &str) -> Result<Option<String>, reqwest::Error> {
     let client = reqwest::Client::new();
     let emails: Vec<GithubEmail> = client
         .get("https://api.github.com/user/emails")
@@ -333,12 +480,11 @@ async fn get_github_user_email(access_token: &str) -> Result<String, reqwest::Er
         .json()
         .await?;
 
-    // Find primary verified email
+    // Find primary verified email - return None if not found (don't fallback to unknown email)
     let email = emails
         .into_iter()
         .find(|e| e.primary && e.verified)
-        .map(|e| e.email)
-        .unwrap_or_else(|| "unknown@dvaar.io".to_string());
+        .map(|e| e.email);
 
     Ok(email)
 }
