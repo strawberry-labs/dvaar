@@ -94,6 +94,16 @@ enum Commands {
         #[arg(value_parser = ["hobby", "pro"])]
         plan: Option<String>,
     },
+
+    /// Update dvaar to the latest version
+    Update,
+
+    /// Uninstall dvaar from your system
+    Uninstall {
+        /// Also remove configuration files
+        #[arg(long)]
+        purge: bool,
+    },
 }
 
 #[tokio::main]
@@ -159,6 +169,14 @@ async fn main() -> Result<()> {
 
         Commands::Upgrade { plan } => {
             commands::billing::upgrade(plan).await?;
+        }
+
+        Commands::Update => {
+            commands::update::run().await?;
+        }
+
+        Commands::Uninstall { purge } => {
+            commands::uninstall::run(purge).await?;
         }
     }
 
