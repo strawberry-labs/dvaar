@@ -104,6 +104,9 @@ enum Commands {
         #[arg(long)]
         purge: bool,
     },
+
+    /// Open billing portal to manage subscription and view invoices
+    Billing,
 }
 
 #[tokio::main]
@@ -177,6 +180,10 @@ async fn main() -> Result<()> {
 
         Commands::Uninstall { purge } => {
             commands::uninstall::run(purge).await?;
+        }
+
+        Commands::Billing => {
+            commands::billing::portal().await?;
         }
     }
 

@@ -6,6 +6,56 @@ use console::style;
 use serde::Deserialize;
 use std::time::Duration;
 
+/// Create a clickable hyperlink for terminals that support OSC 8
+fn hyperlink(url: &str, text: &str) -> String {
+    format!("\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\", url, text)
+}
+
+/// Copy text to clipboard (best effort, doesn't fail if unavailable)
+fn copy_to_clipboard(text: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::{Command, Stdio};
+        let _ = Command::new("pbcopy")
+            .stdin(Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                use std::io::Write;
+                if let Some(stdin) = child.stdin.as_mut() {
+                    let _ = stdin.write_all(text.as_bytes());
+                }
+                child.wait()
+            });
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        use std::process::{Command, Stdio};
+        // Try xclip first, then xsel
+        let _ = Command::new("xclip")
+            .args(["-selection", "clipboard"])
+            .stdin(Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                use std::io::Write;
+                if let Some(stdin) = child.stdin.as_mut() {
+                    let _ = stdin.write_all(text.as_bytes());
+                }
+                child.wait()
+            });
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::{Command, Stdio};
+        let _ = Command::new("cmd")
+            .args(["/C", &format!("echo {} | clip", text)])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .spawn();
+    }
+}
+
 const GITHUB_DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
 const GITHUB_ACCESS_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
 
@@ -69,15 +119,24 @@ pub async fn run(token: Option<String>) -> Result<()> {
     let device_response = request_device_code(&client, &config).await?;
     spinner.stop("Connected to GitHub");
 
-    // Step 2: Display code to user
+    // Step 2: Display code to user and auto-copy
+    copy_to_clipboard(&device_response.user_code);
+
+    let github_link = hyperlink(
+        &device_response.verification_uri,
+        &device_response.verification_uri
+    );
+
     let code_display = format!(
-        "Copy this code: {}\n\nThen paste it at: {}",
-        style(&device_response.user_code).green().bold(),
-        style(&device_response.verification_uri).cyan().underlined()
+        "{} {}\n\n{}\n\nPaste it at: {}",
+        style("Your code:").white().bold(),
+        style(&device_response.user_code).green().bold().bright(),
+        style("(Already copied to clipboard!)").dim(),
+        style(&github_link).cyan().underlined()
     );
     note("One-Time Code", &code_display)?;
 
-    let should_open = confirm("Open GitHub in your browser?")
+    let should_open = confirm("Proceed to GitHub in your browser?")
         .initial_value(true)
         .interact()?;
 
@@ -85,10 +144,13 @@ pub async fn run(token: Option<String>) -> Result<()> {
         // Open browser
         if let Err(e) = open::that(&device_response.verification_uri) {
             cliclack::log::warning("Could not open browser automatically")?;
-            cliclack::log::info(format!("Please visit: {}", device_response.verification_uri))?;
+            cliclack::log::info(format!(
+                "Please visit: {}",
+                hyperlink(&device_response.verification_uri, &device_response.verification_uri)
+            ))?;
             tracing::debug!("Failed to open browser: {}", e);
         } else {
-            cliclack::log::info("Browser opened")?;
+            cliclack::log::success("Browser opened - paste your code there")?;
         }
     }
 
@@ -109,7 +171,18 @@ pub async fn run(token: Option<String>) -> Result<()> {
     config.save()?;
 
     cliclack::log::success(format!("Logged in as {}", style(&dvaar_response.user.email).green()))?;
-    outro("You're all set! Run `dvaar http <port>` to create a tunnel.")?;
+
+    println!();
+    println!("  {} {}", style("Quick start:").white().bold(), style("dvaar http 3000").green());
+    println!();
+    println!("  {} {}", style("Common commands:").dim(), "");
+    println!("    {}  Create a tunnel to local port", style("dvaar http <port>").cyan());
+    println!("    {}        List active tunnels", style("dvaar ls").cyan());
+    println!("    {}   View bandwidth usage", style("dvaar usage").cyan());
+    println!("    {} Upgrade your plan", style("dvaar upgrade").cyan());
+    println!();
+
+    outro("You're all set!")?;
 
     Ok(())
 }

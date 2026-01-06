@@ -1,83 +1,125 @@
 //! Uninstall command - remove dvaar from the system
 
 use anyhow::{Context, Result};
+use console::style;
 use std::fs;
-use std::io::{self, Write};
 
 /// Run the uninstall command
-pub async fn run(purge: bool) -> Result<()> {
-    println!("Uninstalling dvaar...");
+pub async fn run(_purge: bool) -> Result<()> {
+    use cliclack::{intro, outro, outro_cancel, confirm, log};
+
+    intro(style(" dvaar uninstall ").on_red().white().bold().to_string())?;
+
+    // Get paths
+    let binary_path = std::env::current_exe().context("Failed to get binary path")?;
+    let config_dir = crate::config::config_dir();
+
+    // Show what will be affected
+    println!();
+    log::info(format!("Binary location: {}", style(binary_path.display()).cyan()))?;
+    if config_dir.exists() {
+        log::info(format!("Config directory: {}", style(config_dir.display()).cyan()))?;
+    }
     println!();
 
-    // Confirm
-    if !confirm_uninstall()? {
-        println!("Uninstall cancelled.");
+    // Confirm uninstall
+    let proceed = confirm("Are you sure you want to uninstall dvaar?")
+        .initial_value(false)
+        .interact()?;
+
+    if !proceed {
+        outro_cancel("Uninstall cancelled")?;
         return Ok(());
     }
 
-    // Find the binary location
-    let binary_path = std::env::current_exe().context("Failed to get binary path")?;
-    println!("Binary location: {}", binary_path.display());
+    // Ask about config removal
+    let remove_config = if config_dir.exists() {
+        println!();
+        log::warning("Your config directory contains:")?;
+        println!("    • Login credentials (you'll need to re-authenticate)");
+        println!("    • Session data and logs");
+        println!();
 
-    // Remove config if purge is set
-    if purge {
-        let config_dir = crate::config::config_dir();
-        if config_dir.exists() {
-            println!("Removing config directory: {}", config_dir.display());
-            fs::remove_dir_all(&config_dir).context("Failed to remove config directory")?;
-            println!("  Config removed.");
-        }
+        confirm("Remove config directory? (This will log you out)")
+            .initial_value(false)
+            .interact()?
+    } else {
+        false
+    };
+
+    // Remove config if requested
+    if remove_config {
+        log::step("Removing config directory...")?;
+        fs::remove_dir_all(&config_dir).context("Failed to remove config directory")?;
+        log::success("Config removed")?;
     }
 
-    // Provide instructions for binary removal
-    // (We can't delete ourselves while running on all platforms)
+    // Try to remove the binary
     println!();
-    println!("To complete uninstallation, remove the binary:");
-    println!();
+    log::step("Removing binary...")?;
 
     #[cfg(unix)]
-    {
-        let path_str = binary_path.display();
-        if binary_path.starts_with("/usr/local") {
-            println!("  sudo rm {}", path_str);
+    let remove_result = {
+        if binary_path.starts_with("/usr/local") || binary_path.starts_with("/usr/bin") {
+            // Need sudo
+            log::info("Root privileges required to remove from system directory")?;
+            std::process::Command::new("sudo")
+                .args(["rm", "-f", &binary_path.to_string_lossy()])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
         } else {
-            println!("  rm {}", path_str);
+            fs::remove_file(&binary_path).is_ok()
         }
-    }
+    };
 
     #[cfg(windows)]
-    {
-        println!("  del \"{}\"", binary_path.display());
-    }
+    let remove_result = {
+        // On Windows, we can't delete ourselves while running
+        // Schedule deletion on next reboot or provide manual instructions
+        false
+    };
 
-    println!();
+    if remove_result {
+        log::success("Binary removed")?;
+        println!();
+        outro("Dvaar has been uninstalled. Thanks for trying it out!")?;
+    } else {
+        // Provide manual instructions
+        println!();
+        log::warning("Could not remove binary automatically")?;
+        println!();
+        println!("  To complete uninstallation, run:");
+        println!();
 
-    if !purge {
-        let config_dir = crate::config::config_dir();
-        if config_dir.exists() {
-            println!("Config directory preserved at: {}", config_dir.display());
-            println!("To remove it, run: dvaar uninstall --purge");
-            println!("Or manually: rm -rf {}", config_dir.display());
+        #[cfg(unix)]
+        {
+            if binary_path.starts_with("/usr/local") || binary_path.starts_with("/usr/bin") {
+                println!("    {}", style(format!("sudo rm {}", binary_path.display())).green());
+            } else {
+                println!("    {}", style(format!("rm {}", binary_path.display())).green());
+            }
+        }
+
+        #[cfg(windows)]
+        {
+            println!("    {}", style(format!("del \"{}\"", binary_path.display())).green());
+        }
+
+        println!();
+
+        if !remove_config && config_dir.exists() {
+            println!("  To also remove config:");
+            println!("    {}", style(format!("rm -rf {}", config_dir.display())).green());
             println!();
         }
+
+        println!("  If you installed via npm:");
+        println!("    {}", style("npm uninstall -g dvaar").green());
+        println!();
+
+        outro("Follow the steps above to complete uninstallation")?;
     }
 
-    // If installed via package manager, mention that
-    println!("If you installed via npm:");
-    println!("  npm uninstall -g dvaar");
-    println!();
-
-    println!("Thanks for using Dvaar!");
-
     Ok(())
-}
-
-fn confirm_uninstall() -> Result<bool> {
-    print!("Are you sure you want to uninstall dvaar? [y/N] ");
-    io::stdout().flush()?;
-
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-
-    Ok(input.trim().eq_ignore_ascii_case("y") || input.trim().eq_ignore_ascii_case("yes"))
 }

@@ -1,7 +1,8 @@
-//! Billing commands (upgrade, usage)
+//! Billing commands (upgrade, usage, billing portal)
 
 use crate::config::Config;
 use anyhow::Result;
+use console::style;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize)]
@@ -12,6 +13,16 @@ struct CheckoutRequest {
 #[derive(Debug, Deserialize)]
 struct CheckoutResponse {
     checkout_url: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PortalResponse {
+    portal_url: String,
+}
+
+/// Create a clickable hyperlink for terminals that support OSC 8
+fn hyperlink(url: &str, text: &str) -> String {
+    format!("\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\", url, text)
 }
 
 
@@ -101,8 +112,11 @@ pub async fn upgrade(plan: Option<String>) -> Result<()> {
     let checkout: CheckoutResponse = response.json().await?;
     spinner.stop("Checkout session created");
 
+    println!();
     log::info("Opening checkout page in your browser...")?;
-    note("Checkout URL", &checkout.checkout_url)?;
+    println!();
+    println!("  {}", style(hyperlink(&checkout.checkout_url, &checkout.checkout_url)).white());
+    println!();
 
     if let Err(e) = open::that(&checkout.checkout_url) {
         tracing::warn!("Failed to open browser: {}", e);
@@ -136,7 +150,8 @@ fn select_plan() -> Result<Option<String>> {
     );
 
     note("Pricing", &pricing_table)?;
-    cliclack::log::info(format!("Full details: {}", style("https://dvaar.io/#pricing").cyan().underlined()))?;
+    let pricing_url = "https://dvaar.io/#pricing";
+    cliclack::log::info(format!("Full details: {}", style(hyperlink(pricing_url, pricing_url)).cyan().underlined()))?;
 
     let selection: &str = select("Select a plan to upgrade")
         .item("hobby", "Hobby - $5/month", "20 tunnels/hr, 600 req/min, custom subdomains")
@@ -171,4 +186,68 @@ fn format_bytes(bytes: u64) -> String {
     } else {
         format!("{} bytes", bytes)
     }
+}
+
+/// Open billing portal to manage subscription and view invoices
+pub async fn portal() -> Result<()> {
+    use cliclack::{intro, outro, log};
+
+    let config = Config::load()?;
+    let token = config.require_auth()?;
+
+    intro(style(" dvaar billing ").on_cyan().black().to_string())?;
+
+    let spinner = cliclack::spinner();
+    spinner.start("Creating billing portal session...");
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("{}/api/billing/portal", config.server_url))
+        .header("Authorization", format!("Bearer {}", token))
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+
+        if status.as_u16() == 400 && text.contains("no active subscription") {
+            spinner.stop("No active subscription");
+            println!();
+            log::info("You're on the free plan. Upgrade to access billing portal.")?;
+            println!();
+            println!("  Run {} to upgrade your plan", style("dvaar upgrade").green());
+            println!();
+            outro("Done")?;
+            return Ok(());
+        }
+
+        spinner.error(format!("Failed: {} - {}", status, text));
+        return Ok(());
+    }
+
+    let portal: PortalResponse = response.json().await?;
+    spinner.stop("Portal session created");
+
+    println!();
+    log::info("Opening billing portal in your browser...")?;
+    println!();
+    println!("  {}", style(hyperlink(&portal.portal_url, &portal.portal_url)).white());
+    println!();
+
+    if let Err(e) = open::that(&portal.portal_url) {
+        tracing::warn!("Failed to open browser: {}", e);
+        log::warning("Could not open browser automatically. Please visit the URL above.")?;
+    }
+
+    println!();
+    println!("  In the billing portal you can:");
+    println!("    • View and download invoices");
+    println!("    • Update payment method");
+    println!("    • Cancel or change subscription");
+    println!();
+
+    outro("Done")?;
+
+    Ok(())
 }
