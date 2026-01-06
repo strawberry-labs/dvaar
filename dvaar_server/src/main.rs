@@ -61,6 +61,45 @@ async fn main() -> anyhow::Result<()> {
     // Create app state
     let state = routes::AppState::new(config.clone(), db_pool, redis_client).await;
 
+    // Register this node in the cluster
+    let node_info = redis::NodeInfo {
+        node_id: config.node_ip.clone(),
+        ip: config.node_ip.clone(),
+        port: config.port,
+        region: std::env::var("NODE_REGION").ok(),
+        tunnel_count: 0,
+        max_tunnels: 1000, // TODO: Make configurable
+    };
+    if let Err(e) = state.route_manager.register_node(&config.node_ip, &node_info).await {
+        tracing::warn!("Failed to register node: {}", e);
+    } else {
+        tracing::info!("Node registered in cluster: {}", config.node_ip);
+    }
+
+    // Spawn node heartbeat task
+    let state_clone = state.clone();
+    let node_ip = config.node_ip.clone();
+    tokio::spawn(async move {
+        let interval = std::time::Duration::from_secs(30);
+        loop {
+            tokio::time::sleep(interval).await;
+            let tunnel_count = state_clone.tunnels.len() as u32;
+            if let Err(e) = state_clone.route_manager.update_node_tunnels(&node_ip, tunnel_count).await {
+                tracing::warn!("Failed to update node tunnels: {}", e);
+            }
+            // Re-register to refresh TTL
+            let info = redis::NodeInfo {
+                node_id: node_ip.clone(),
+                ip: node_ip.clone(),
+                port: state_clone.config.port,
+                region: std::env::var("NODE_REGION").ok(),
+                tunnel_count,
+                max_tunnels: 1000,
+            };
+            let _ = state_clone.route_manager.register_node(&node_ip, &info).await;
+        }
+    });
+
     // Build main router (public port)
     let app = Router::new()
         .route("/health", get(health_check))

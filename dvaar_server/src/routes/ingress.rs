@@ -71,24 +71,9 @@ pub async fn handle_ingress(
 
     tracing::debug!("Ingress request for subdomain: {}", subdomain);
 
-    // Skip paid status check - use free tier limits (10k/min is enough)
-    // TODO: Add caching for paid status to avoid DB lookup on every request
-    match state.rate_limiter.check_requests(&subdomain, false).await {
-        Ok(result) if !result.allowed => {
-            tracing::warn!(
-                "Rate limit exceeded for subdomain {}: {}/{} requests/min",
-                subdomain,
-                result.current,
-                result.limit
-            );
-            return rate_limit_response(result.reset_in_secs);
-        }
-        Err(e) => {
-            tracing::error!("Rate limit check failed: {}", e);
-            // Continue anyway - fail open for rate limiting
-        }
-        Ok(_) => {}
-    }
+    // Request rate limiting disabled - bandwidth limits are the real gate
+    // Keeping this code commented for future use if needed
+    // match state.rate_limiter.check_requests(&subdomain, false).await { ... }
 
     // Check 1: Local tunnel
     if let Some(handle) = state.tunnels.get(&subdomain) {

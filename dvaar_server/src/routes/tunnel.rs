@@ -121,13 +121,11 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         Ok(_) => {}
     }
 
-    // Check bandwidth limit
-    let bandwidth_limit = if user.subscription.as_deref() == Some("pro") {
-        constants::BANDWIDTH_PRO
-    } else if user.subscription.as_deref() == Some("hobby") {
-        constants::BANDWIDTH_HOBBY
-    } else {
-        constants::BANDWIDTH_FREE
+    // Check bandwidth limit based on user's plan
+    let bandwidth_limit = match user.plan.as_str() {
+        "pro" => constants::BANDWIDTH_PRO,
+        "hobby" => constants::BANDWIDTH_HOBBY,
+        _ => constants::BANDWIDTH_FREE,
     };
 
     match state.route_manager.get_usage(&user.id.to_string()).await {

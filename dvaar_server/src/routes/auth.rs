@@ -22,6 +22,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/auth/token", post(exchange_token))
         .route("/api/user", get(get_user))
         .route("/api/usage", get(get_usage))
+        .route("/api/nodes", get(get_nodes))
 }
 
 /// Query params for GitHub redirect
@@ -340,4 +341,74 @@ async fn get_github_user_email(access_token: &str) -> Result<String, reqwest::Er
         .unwrap_or_else(|| "unknown@dvaar.io".to_string());
 
     Ok(email)
+}
+
+/// Get best available edge nodes for client-side routing
+/// Returns top 3 nodes sorted by: 1) region match, 2) lowest load
+async fn get_nodes(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    // Get client IP from Cloudflare headers
+    let client_ip = headers
+        .get("cf-connecting-ip")
+        .and_then(|v| v.to_str().ok())
+        .or_else(|| headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()).and_then(|s| s.split(',').next()))
+        .unwrap_or("unknown")
+        .to_string();
+
+    // Get client region from Cloudflare header (if available)
+    let client_region = headers
+        .get("cf-ipcountry")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
+    match state.route_manager.get_all_nodes().await {
+        Ok(mut nodes) => {
+            // Sort nodes: prioritize same region, then by load (tunnel_count)
+            nodes.sort_by(|a, b| {
+                // Same region gets priority
+                let a_region_match = client_region.as_ref().map(|cr| a.region.as_ref() == Some(cr)).unwrap_or(false);
+                let b_region_match = client_region.as_ref().map(|cr| b.region.as_ref() == Some(cr)).unwrap_or(false);
+
+                match (a_region_match, b_region_match) {
+                    (true, false) => std::cmp::Ordering::Less,
+                    (false, true) => std::cmp::Ordering::Greater,
+                    _ => {
+                        // Same region status - sort by load (lower is better)
+                        let a_load = a.tunnel_count as f32 / a.max_tunnels.max(1) as f32;
+                        let b_load = b.tunnel_count as f32 / b.max_tunnels.max(1) as f32;
+                        a_load.partial_cmp(&b_load).unwrap_or(std::cmp::Ordering::Equal)
+                    }
+                }
+            });
+
+            // Return only top 3 available nodes
+            let public_nodes: Vec<serde_json::Value> = nodes
+                .into_iter()
+                .filter(|n| n.tunnel_count < n.max_tunnels)
+                .take(3)
+                .map(|n| {
+                    serde_json::json!({
+                        "id": n.node_id,
+                        "host": format!("{}:{}", n.ip, n.port),
+                        "region": n.region,
+                        "tunnels": n.tunnel_count,
+                        "capacity": n.max_tunnels
+                    })
+                })
+                .collect();
+
+            Json(serde_json::json!({
+                "nodes": public_nodes,
+                "client_ip": client_ip,
+                "client_region": client_region
+            }))
+            .into_response()
+        }
+        Err(e) => {
+            tracing::error!("Failed to get nodes: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to get nodes").into_response()
+        }
+    }
 }

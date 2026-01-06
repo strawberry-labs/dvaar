@@ -193,6 +193,12 @@ pub mod constants {
     /// Redis key prefix for usage tracking
     pub const USAGE_PREFIX: &str = "usage:";
 
+    /// Redis key prefix for node registration
+    pub const NODE_PREFIX: &str = "node";
+
+    /// TTL for node registration (seconds) - nodes must heartbeat within this time
+    pub const NODE_TTL_SECONDS: u64 = 60;
+
     /// TTL for route keys in seconds
     pub const ROUTE_TTL_SECONDS: u64 = 60;
 

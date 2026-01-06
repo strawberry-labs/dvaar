@@ -103,6 +103,54 @@ impl RouteManager {
         self.client.del::<i64, _>(&key).await?;
         Ok(())
     }
+
+    /// Register this node in the cluster (uses Redis hash)
+    pub async fn register_node(&self, node_id: &str, node_info: &NodeInfo) -> anyhow::Result<()> {
+        use fred::interfaces::HashesInterface;
+
+        let value = serde_json::to_string(node_info)?;
+        self.client.hset::<(), _, _>(constants::NODE_PREFIX, (node_id, &value)).await?;
+        // Set expiry on the hash (all nodes expire together, re-register refreshes)
+        self.client.expire::<(), _>(constants::NODE_PREFIX, constants::NODE_TTL_SECONDS as i64, None).await?;
+        Ok(())
+    }
+
+    /// Update node's tunnel count
+    pub async fn update_node_tunnels(&self, node_id: &str, tunnel_count: u32) -> anyhow::Result<()> {
+        use fred::interfaces::HashesInterface;
+
+        if let Some(json) = self.client.hget::<Option<String>, _, _>(constants::NODE_PREFIX, node_id).await? {
+            if let Ok(mut info) = serde_json::from_str::<NodeInfo>(&json) {
+                info.tunnel_count = tunnel_count;
+                let value = serde_json::to_string(&info)?;
+                self.client.hset::<(), _, _>(constants::NODE_PREFIX, (node_id, &value)).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Get all registered nodes
+    pub async fn get_all_nodes(&self) -> anyhow::Result<Vec<NodeInfo>> {
+        use fred::interfaces::HashesInterface;
+
+        let all: std::collections::HashMap<String, String> = self.client.hgetall(constants::NODE_PREFIX).await?;
+        let nodes: Vec<NodeInfo> = all
+            .values()
+            .filter_map(|json| serde_json::from_str(json).ok())
+            .collect();
+        Ok(nodes)
+    }
+}
+
+/// Node information for cluster discovery
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct NodeInfo {
+    pub node_id: String,
+    pub ip: String,
+    pub port: u16,
+    pub region: Option<String>,
+    pub tunnel_count: u32,
+    pub max_tunnels: u32,
 }
 
 /// Start a heartbeat task that refreshes a route periodically
