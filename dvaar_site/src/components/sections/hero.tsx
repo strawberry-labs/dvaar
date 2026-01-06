@@ -30,11 +30,6 @@ const installCommands = [
     command: "bun add -g dvaar",
   },
   {
-    id: "brew",
-    label: "brew",
-    command: "brew install strawberry-labs/dvaar",
-  },
-  {
     id: "windows",
     label: "windows",
     command: "irm https://dvaar.io/install.ps1 | iex",

@@ -150,73 +150,16 @@ jobs:
           cd packages/dvaar-cli
           npm publish --access public
 
-  update-homebrew:
-    name: Update Homebrew Formula
-    needs: release
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout tap repo
-        uses: actions/checkout@v4
-        with:
-          repository: strawberry-labs/homebrew-dvaar
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          path: homebrew-tap
-
-      - name: Download release assets
-        run: |
-          VERSION=${GITHUB_REF#refs/tags/v}
-          curl -sSL "https://github.com/strawberry-labs/dvaar/releases/download/v${VERSION}/dvaar-darwin-x64.tar.gz" -o darwin-x64.tar.gz
-          curl -sSL "https://github.com/strawberry-labs/dvaar/releases/download/v${VERSION}/dvaar-darwin-arm64.tar.gz" -o darwin-arm64.tar.gz
-          curl -sSL "https://github.com/strawberry-labs/dvaar/releases/download/v${VERSION}/dvaar-linux-x64.tar.gz" -o linux-x64.tar.gz
-
-      - name: Calculate checksums
-        id: checksums
-        run: |
-          echo "darwin_x64=$(sha256sum darwin-x64.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
-          echo "darwin_arm64=$(sha256sum darwin-arm64.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
-          echo "linux_x64=$(sha256sum linux-x64.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
-
-      - name: Update formula
-        run: |
-          VERSION=${GITHUB_REF#refs/tags/v}
-          cat > homebrew-tap/Formula/dvaar.rb << EOF
-          class Dvaar < Formula
-            desc "Expose your localhost to the internet"
-            homepage "https://dvaar.io"
-            version "${VERSION}"
-            license "MIT"
-
-            on_macos do
-              if Hardware::CPU.arm?
-                url "https://github.com/strawberry-labs/dvaar/releases/download/v${VERSION}/dvaar-darwin-arm64.tar.gz"
-                sha256 "${{ steps.checksums.outputs.darwin_arm64 }}"
-              else
-                url "https://github.com/strawberry-labs/dvaar/releases/download/v${VERSION}/dvaar-darwin-x64.tar.gz"
-                sha256 "${{ steps.checksums.outputs.darwin_x64 }}"
-              end
-            end
-
-            on_linux do
-              url "https://github.com/strawberry-labs/dvaar/releases/download/v${VERSION}/dvaar-linux-x64.tar.gz"
-              sha256 "${{ steps.checksums.outputs.linux_x64 }}"
-            end
-
-            def install
-              bin.install "dvaar"
-            end
-
-            test do
-              system "#{bin}/dvaar", "--version"
-            end
-          end
-          EOF
-
-      - name: Commit and push
-        run: |
-          cd homebrew-tap
-          git config user.name "GitHub Actions"
-          git config user.email "actions@github.com"
-          git add Formula/dvaar.rb
-          git commit -m "Update dvaar to ${GITHUB_REF#refs/tags/v}"
-          git push
+  # TODO: Enable Homebrew publishing when tap repo is set up
+  # update-homebrew:
+  #   name: Update Homebrew Formula
+  #   needs: release
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Checkout tap repo
+  #       uses: actions/checkout@v4
+  #       with:
+  #         repository: strawberry-labs/homebrew-dvaar
+  #         token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+  #         path: homebrew-tap
+  #     ... (see git history for full config)

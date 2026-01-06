@@ -88,7 +88,4 @@ fn print_manual_update_instructions() {
     println!();
     println!("Or via npm:");
     println!("  npm install -g dvaar");
-    println!();
-    println!("Or via Homebrew (macOS/Linux):");
-    println!("  brew upgrade dvaar");
 }

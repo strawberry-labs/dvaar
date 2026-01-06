@@ -63,9 +63,8 @@ pub async fn run(purge: bool) -> Result<()> {
     }
 
     // If installed via package manager, mention that
-    println!("If you installed via a package manager:");
-    println!("  brew uninstall dvaar      # Homebrew");
-    println!("  npm uninstall -g dvaar    # npm");
+    println!("If you installed via npm:");
+    println!("  npm uninstall -g dvaar");
     println!();
 
     println!("Thanks for using Dvaar!");
