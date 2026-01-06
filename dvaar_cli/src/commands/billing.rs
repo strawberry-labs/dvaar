@@ -202,7 +202,7 @@ pub async fn portal() -> Result<()> {
 
     let client = reqwest::Client::new();
     let response = client
-        .post(format!("{}/api/billing/portal", config.server_url))
+        .get(format!("{}/api/billing/portal", config.server_url))
         .header("Authorization", format!("Bearer {}", token))
         .send()
         .await?;

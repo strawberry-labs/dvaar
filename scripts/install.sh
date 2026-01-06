@@ -3,6 +3,11 @@ set -euo pipefail
 
 # Dvaar CLI Installer
 # Usage: curl -sSL https://dvaar.io/install.sh | bash
+#
+# Works on:
+# - macOS (Intel & Apple Silicon)
+# - Linux (x64 & arm64)
+# - Windows (via Git Bash)
 
 VERSION="${DVAAR_VERSION:-latest}"
 GITHUB_REPO="strawberry-labs/dvaar"
@@ -39,6 +44,13 @@ detect_platform() {
     esac
 
     PLATFORM="${OS}-${ARCH}"
+
+    # Set binary name based on OS
+    if [ "$OS" = "windows" ]; then
+        BINARY_NAME="dvaar.exe"
+    else
+        BINARY_NAME="dvaar"
+    fi
 }
 
 # Get latest version from GitHub
@@ -57,35 +69,61 @@ determine_install_dir() {
         return
     fi
 
-    # Try /usr/local/bin first (requires sudo)
-    if [ -w "/usr/local/bin" ]; then
-        INSTALL_DIR="/usr/local/bin"
-    elif [ -d "$HOME/.local/bin" ]; then
-        INSTALL_DIR="$HOME/.local/bin"
+    if [ "$OS" = "windows" ]; then
+        # Windows: use ~/.dvaar/bin (will be added to PATH)
+        INSTALL_DIR="$HOME/.dvaar/bin"
+        mkdir -p "$INSTALL_DIR"
     else
-        mkdir -p "$HOME/.local/bin"
-        INSTALL_DIR="$HOME/.local/bin"
+        # Unix: try /usr/local/bin first, then ~/.local/bin
+        if [ -w "/usr/local/bin" ]; then
+            INSTALL_DIR="/usr/local/bin"
+        elif [ -d "$HOME/.local/bin" ]; then
+            INSTALL_DIR="$HOME/.local/bin"
+        else
+            mkdir -p "$HOME/.local/bin"
+            INSTALL_DIR="$HOME/.local/bin"
+        fi
     fi
 }
 
 # Download and install
 install_dvaar() {
     local TMP_DIR=$(mktemp -d)
-    local BINARY_NAME="dvaar"
-    local DOWNLOAD_URL="https://github.com/${GITHUB_REPO}/releases/download/v${VERSION}/dvaar-${PLATFORM}.tar.gz"
 
-    info "Downloading dvaar v${VERSION} for ${PLATFORM}..."
+    if [ "$OS" = "windows" ]; then
+        # Windows: download .zip
+        local DOWNLOAD_URL="https://github.com/${GITHUB_REPO}/releases/download/v${VERSION}/dvaar-${PLATFORM}.zip"
 
-    if ! curl -sSL "$DOWNLOAD_URL" -o "${TMP_DIR}/dvaar.tar.gz"; then
-        rm -rf "$TMP_DIR"
-        error "Download failed. Binary may not exist for ${PLATFORM}."
+        info "Downloading dvaar v${VERSION} for ${PLATFORM}..."
+
+        if ! curl -sSL "$DOWNLOAD_URL" -o "${TMP_DIR}/dvaar.zip"; then
+            rm -rf "$TMP_DIR"
+            error "Download failed. Binary may not exist for ${PLATFORM}."
+        fi
+
+        info "Extracting..."
+        unzip -q "${TMP_DIR}/dvaar.zip" -d "$TMP_DIR"
+    else
+        # Unix: download .tar.gz
+        local DOWNLOAD_URL="https://github.com/${GITHUB_REPO}/releases/download/v${VERSION}/dvaar-${PLATFORM}.tar.gz"
+
+        info "Downloading dvaar v${VERSION} for ${PLATFORM}..."
+
+        if ! curl -sSL "$DOWNLOAD_URL" -o "${TMP_DIR}/dvaar.tar.gz"; then
+            rm -rf "$TMP_DIR"
+            error "Download failed. Binary may not exist for ${PLATFORM}."
+        fi
+
+        info "Extracting..."
+        tar -xzf "${TMP_DIR}/dvaar.tar.gz" -C "$TMP_DIR"
     fi
 
-    info "Extracting..."
-    tar -xzf "${TMP_DIR}/dvaar.tar.gz" -C "$TMP_DIR"
-
     info "Installing to ${INSTALL_DIR}..."
-    if [ -w "$INSTALL_DIR" ]; then
+
+    if [ "$OS" = "windows" ]; then
+        # Windows: just move the file
+        mv "${TMP_DIR}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
+    elif [ -w "$INSTALL_DIR" ]; then
         mv "${TMP_DIR}/dvaar" "${INSTALL_DIR}/${BINARY_NAME}"
         chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
     else
@@ -96,9 +134,28 @@ install_dvaar() {
     rm -rf "$TMP_DIR"
 }
 
+# Add to PATH on Windows
+add_to_path_windows() {
+    info "Adding to Windows PATH..."
+
+    # Check if already in PATH
+    if powershell.exe -Command "[Environment]::GetEnvironmentVariable('PATH', 'User')" 2>/dev/null | grep -q "$INSTALL_DIR"; then
+        info "Already in PATH"
+        return
+    fi
+
+    # Add to user PATH via PowerShell
+    local WIN_PATH=$(cygpath -w "$INSTALL_DIR" 2>/dev/null || echo "$INSTALL_DIR")
+    powershell.exe -Command "[Environment]::SetEnvironmentVariable('PATH', [Environment]::GetEnvironmentVariable('PATH', 'User') + ';${WIN_PATH}', 'User')" 2>/dev/null || true
+
+    warn "Restart your terminal for PATH changes to take effect"
+}
+
 # Check if directory is in PATH
 check_path() {
-    if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
+    if [ "$OS" = "windows" ]; then
+        add_to_path_windows
+    elif [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
         warn "$INSTALL_DIR is not in your PATH"
         echo ""
         echo "Add this to your shell profile (~/.bashrc, ~/.zshrc, etc.):"
@@ -116,7 +173,7 @@ verify_install() {
         dvaar --version
     else
         check_path
-        success "dvaar v${VERSION} installed to ${INSTALL_DIR}/dvaar"
+        success "dvaar v${VERSION} installed to ${INSTALL_DIR}/${BINARY_NAME}"
     fi
 }
 

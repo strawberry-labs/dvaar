@@ -78,13 +78,34 @@ function Test-Installation {
 # Print next steps
 function Show-NextSteps {
     Write-Host ""
-    Write-Host "Next steps:" -ForegroundColor Cyan
+    Write-Host "Dvaar is fully managed through the CLI - no dashboard needed!" -ForegroundColor Blue
     Write-Host ""
-    Write-Host "  1. Login with GitHub:"
-    Write-Host "     " -NoNewline; Write-Host "dvaar login" -ForegroundColor Green
+    Write-Host ([char]0x2501 * 60)
     Write-Host ""
-    Write-Host "  2. Expose a local port:"
-    Write-Host "     " -NoNewline; Write-Host "dvaar http 3000" -ForegroundColor Green
+    Write-Host "Getting started:"
+    Write-Host ""
+    Write-Host "  " -NoNewline; Write-Host "dvaar login" -ForegroundColor Green -NoNewline; Write-Host "            Authenticate with GitHub"
+    Write-Host "  " -NoNewline; Write-Host "dvaar http 3000" -ForegroundColor Green -NoNewline; Write-Host "        Expose local port 3000"
+    Write-Host "  " -NoNewline; Write-Host "dvaar http ./dist" -ForegroundColor Green -NoNewline; Write-Host "      Serve a static directory"
+    Write-Host ""
+    Write-Host "Tunnel management:"
+    Write-Host ""
+    Write-Host "  " -NoNewline; Write-Host "dvaar ls" -ForegroundColor Green -NoNewline; Write-Host "               List active tunnels"
+    Write-Host "  " -NoNewline; Write-Host "dvaar stop <id>" -ForegroundColor Green -NoNewline; Write-Host "        Stop a tunnel"
+    Write-Host "  " -NoNewline; Write-Host "dvaar logs <id>" -ForegroundColor Green -NoNewline; Write-Host "        View tunnel logs"
+    Write-Host ""
+    Write-Host "Account & billing:"
+    Write-Host ""
+    Write-Host "  " -NoNewline; Write-Host "dvaar usage" -ForegroundColor Green -NoNewline; Write-Host "            View bandwidth usage"
+    Write-Host "  " -NoNewline; Write-Host "dvaar upgrade" -ForegroundColor Green -NoNewline; Write-Host "          Upgrade your plan"
+    Write-Host "  " -NoNewline; Write-Host "dvaar billing" -ForegroundColor Green -NoNewline; Write-Host "          Manage subscription & invoices"
+    Write-Host ""
+    Write-Host "Maintenance:"
+    Write-Host ""
+    Write-Host "  " -NoNewline; Write-Host "dvaar update" -ForegroundColor Green -NoNewline; Write-Host "           Update to latest version"
+    Write-Host "  " -NoNewline; Write-Host "dvaar uninstall" -ForegroundColor Green -NoNewline; Write-Host "        Remove dvaar from your system"
+    Write-Host ""
+    Write-Host ([char]0x2501 * 60)
     Write-Host ""
     Write-Host "Documentation: https://dvaar.io/docs"
     Write-Host ""
