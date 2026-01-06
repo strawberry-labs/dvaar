@@ -79,7 +79,7 @@ async fn create_checkout(
     let customer_id = match &user.stripe_customer_id {
         Some(id) => id.clone(),
         None => {
-            match create_stripe_customer(&stripe_key, &user.email).await {
+            match create_stripe_customer(&state.http_client, &stripe_key, &user.email).await {
                 Ok(id) => {
                     // Save customer ID
                     if let Err(e) = queries::update_stripe_customer(&state.db, user.id, &id).await {
@@ -99,7 +99,7 @@ async fn create_checkout(
     let success_url = format!("{}/billing/success?session_id={{CHECKOUT_SESSION_ID}}", state.config.public_url);
     let cancel_url = format!("{}/billing/cancel", state.config.public_url);
 
-    match create_checkout_session(&stripe_key, &customer_id, &price_id, &success_url, &cancel_url).await {
+    match create_checkout_session(&state.http_client, &stripe_key, &customer_id, &price_id, &success_url, &cancel_url).await {
         Ok(url) => Json(CheckoutResponse { checkout_url: url }).into_response(),
         Err(e) => {
             tracing::error!("Failed to create checkout session: {}", e);
@@ -139,7 +139,7 @@ async fn customer_portal(
 
     let return_url = format!("{}/dashboard", state.config.public_url);
 
-    match create_portal_session(&stripe_key, customer_id, &return_url).await {
+    match create_portal_session(&state.http_client, &stripe_key, customer_id, &return_url).await {
         Ok(url) => Json(serde_json::json!({ "portal_url": url })).into_response(),
         Err(e) => {
             tracing::error!("Failed to create portal session: {}", e);
@@ -256,8 +256,8 @@ async fn list_plans() -> Response {
 
 // Stripe API helpers
 
-async fn create_stripe_customer(api_key: &str, email: &str) -> Result<String, reqwest::Error> {
-    let client = reqwest::Client::new();
+async fn create_stripe_customer(client: &reqwest::Client, api_key: &str, email: &str) -> Result<String, reqwest::Error> {
+    // Use shared HTTP client for connection pooling
     let response: serde_json::Value = client
         .post(format!("{}/customers", STRIPE_API_URL))
         .basic_auth(api_key, None::<&str>)
@@ -271,13 +271,14 @@ async fn create_stripe_customer(api_key: &str, email: &str) -> Result<String, re
 }
 
 async fn create_checkout_session(
+    client: &reqwest::Client,
     api_key: &str,
     customer_id: &str,
     price_id: &str,
     success_url: &str,
     cancel_url: &str,
 ) -> Result<String, reqwest::Error> {
-    let client = reqwest::Client::new();
+    // Use shared HTTP client for connection pooling
     let response: serde_json::Value = client
         .post(format!("{}/checkout/sessions", STRIPE_API_URL))
         .basic_auth(api_key, None::<&str>)
@@ -298,11 +299,12 @@ async fn create_checkout_session(
 }
 
 async fn create_portal_session(
+    client: &reqwest::Client,
     api_key: &str,
     customer_id: &str,
     return_url: &str,
 ) -> Result<String, reqwest::Error> {
-    let client = reqwest::Client::new();
+    // Use shared HTTP client for connection pooling
     let response: serde_json::Value = client
         .post(format!("{}/billing_portal/sessions", STRIPE_API_URL))
         .basic_auth(api_key, None::<&str>)
@@ -343,7 +345,7 @@ async fn handle_checkout_completed(state: &AppState, session: &serde_json::Value
     };
 
     // Get subscription details to determine plan
-    let plan = determine_plan_from_subscription(subscription_id).await.unwrap_or("hobby".to_string());
+    let plan = determine_plan_from_subscription(&state.http_client, subscription_id).await.unwrap_or("free".to_string());
 
     // Update user's plan
     let expires_at = Utc::now() + Duration::days(30);
@@ -372,14 +374,14 @@ async fn handle_subscription_updated(state: &AppState, subscription: &serde_json
 
     let (plan, expires_at) = match status {
         "active" | "trialing" => {
-            let plan = determine_plan_from_subscription(subscription_id).await.unwrap_or("hobby".to_string());
+            let plan = determine_plan_from_subscription(&state.http_client, subscription_id).await.unwrap_or("free".to_string());
             let period_end = subscription["current_period_end"].as_i64().unwrap_or(0);
             let expires = DateTime::from_timestamp(period_end, 0).unwrap_or(Utc::now());
             (plan, Some(expires))
         }
         "past_due" | "unpaid" => {
             // Give grace period - keep current plan
-            let plan = determine_plan_from_subscription(subscription_id).await.unwrap_or("hobby".to_string());
+            let plan = determine_plan_from_subscription(&state.http_client, subscription_id).await.unwrap_or("free".to_string());
             (plan, Some(Utc::now() + Duration::days(7)))
         }
         "canceled" | "incomplete_expired" => {
@@ -422,14 +424,13 @@ async fn handle_payment_failed(state: &AppState, invoice: &serde_json::Value) {
     tracing::warn!("Payment failed for customer: {}", customer_id);
 }
 
-async fn determine_plan_from_subscription(subscription_id: &str) -> Option<String> {
+async fn determine_plan_from_subscription(http_client: &reqwest::Client, subscription_id: &str) -> Option<String> {
     let stripe_key = std::env::var("STRIPE_SECRET_KEY").ok()?;
     let hobby_price_id = std::env::var("STRIPE_HOBBY_PRICE_ID").unwrap_or_default();
     let pro_price_id = std::env::var("STRIPE_PRO_PRICE_ID").unwrap_or_default();
 
-    // Fetch subscription from Stripe API
-    let client = reqwest::Client::new();
-    let response: serde_json::Value = match client
+    // Fetch subscription from Stripe API using shared client
+    let response: serde_json::Value = match http_client
         .get(format!("{}/subscriptions/{}", STRIPE_API_URL, subscription_id))
         .basic_auth(&stripe_key, None::<&str>)
         .send()

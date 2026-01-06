@@ -164,7 +164,7 @@ async fn github_callback(
     };
 
     // Get user email from GitHub
-    let email = match get_github_user_email(&token_response.access_token).await {
+    let email = match get_github_user_email(&state.http_client, &token_response.access_token).await {
         Ok(Some(email)) => email,
         Ok(None) => {
             tracing::warn!("GitHub user has no verified primary email");
@@ -382,7 +382,7 @@ async fn exchange_token(
     Json(payload): Json<ExchangeTokenRequest>,
 ) -> Response {
     // Get user email from GitHub using the provided token
-    let email = match get_github_user_email(&payload.github_token).await {
+    let email = match get_github_user_email(&state.http_client, &payload.github_token).await {
         Ok(Some(email)) => email,
         Ok(None) => {
             tracing::warn!("GitHub user has no verified primary email (device flow)");
@@ -445,8 +445,8 @@ async fn exchange_github_code(
     state: &AppState,
     code: &str,
 ) -> Result<GithubTokenResponse, reqwest::Error> {
-    let client = reqwest::Client::new();
-    let response = client
+    // Use shared HTTP client for connection pooling
+    let response = state.http_client
         .post("https://github.com/login/oauth/access_token")
         .header("Accept", "application/json")
         .form(&[
@@ -469,8 +469,8 @@ struct GithubEmail {
     verified: bool,
 }
 
-async fn get_github_user_email(access_token: &str) -> Result<Option<String>, reqwest::Error> {
-    let client = reqwest::Client::new();
+async fn get_github_user_email(client: &reqwest::Client, access_token: &str) -> Result<Option<String>, reqwest::Error> {
+    // Use shared HTTP client for connection pooling
     let emails: Vec<GithubEmail> = client
         .get("https://api.github.com/user/emails")
         .header("Authorization", format!("Bearer {}", access_token))

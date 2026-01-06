@@ -1,10 +1,12 @@
 //! Redis connection and operations for routing
 
+use dashmap::DashMap;
 use dvaar_common::{constants, RouteInfo};
 use fred::clients::Client;
 use fred::interfaces::*;
 use fred::types::{config::Config as RedisConfig, Expiration};
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 /// Initialize Redis client
 pub async fn init_client(redis_url: &str) -> anyhow::Result<Client> {
@@ -14,14 +16,28 @@ pub async fn init_client(redis_url: &str) -> anyhow::Result<Client> {
     Ok(client)
 }
 
+/// Local cache entry with timestamp
+struct CacheEntry {
+    route: RouteInfo,
+    cached_at: Instant,
+}
+
+/// Cache TTL - routes are cached locally for 5 seconds
+const ROUTE_CACHE_TTL: Duration = Duration::from_secs(5);
+
 /// Redis operations for route management
 pub struct RouteManager {
     client: Client,
+    /// Local cache for route lookups to reduce Redis hits on hot path
+    route_cache: Arc<DashMap<String, CacheEntry>>,
 }
 
 impl RouteManager {
     pub fn new(client: Client) -> Self {
-        Self { client }
+        Self {
+            client,
+            route_cache: Arc::new(DashMap::new()),
+        }
     }
 
     /// Ping Redis to check connection
@@ -49,17 +65,45 @@ impl RouteManager {
             )
             .await?;
 
+        // Update local cache
+        self.route_cache.insert(
+            subdomain.to_string(),
+            CacheEntry {
+                route: route_info.clone(),
+                cached_at: Instant::now(),
+            },
+        );
+
         Ok(())
     }
 
-    /// Get route info for a subdomain
+    /// Get route info for a subdomain (with local caching)
     pub async fn get_route(&self, subdomain: &str) -> anyhow::Result<Option<RouteInfo>> {
+        // Check local cache first
+        if let Some(entry) = self.route_cache.get(subdomain) {
+            if entry.cached_at.elapsed() < ROUTE_CACHE_TTL {
+                return Ok(Some(entry.route.clone()));
+            }
+            // Cache entry expired, remove it
+            drop(entry);
+            self.route_cache.remove(subdomain);
+        }
+
+        // Fetch from Redis
         let key = format!("{}{}", constants::ROUTE_PREFIX, subdomain);
         let value: Option<String> = self.client.get(&key).await?;
 
         match value {
             Some(json) => {
                 let route = RouteInfo::from_json(&json)?;
+                // Cache the result
+                self.route_cache.insert(
+                    subdomain.to_string(),
+                    CacheEntry {
+                        route: route.clone(),
+                        cached_at: Instant::now(),
+                    },
+                );
                 Ok(Some(route))
             }
             None => Ok(None),
@@ -70,6 +114,8 @@ impl RouteManager {
     pub async fn remove_route(&self, subdomain: &str) -> anyhow::Result<()> {
         let key = format!("{}{}", constants::ROUTE_PREFIX, subdomain);
         self.client.del::<i64, _>(&key).await?;
+        // Invalidate local cache
+        self.route_cache.remove(subdomain);
         Ok(())
     }
 
