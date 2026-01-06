@@ -38,18 +38,18 @@ pub mod limits {
         RateLimitConfig::new(20, 3600)
     }
 
-    /// Request rate: 60/min for free, 600/min for paid
+    /// Request rate: 10000/min for free, 100000/min for paid
     pub fn requests_free() -> RateLimitConfig {
-        RateLimitConfig::new(60, 60)
+        RateLimitConfig::new(10000, 60)
     }
 
     pub fn requests_paid() -> RateLimitConfig {
-        RateLimitConfig::new(600, 60)
+        RateLimitConfig::new(100000, 60)
     }
 
-    /// Auth attempts: 10 per hour (same for all)
+    /// Auth attempts: 100 per hour (same for all)
     pub fn auth_attempts() -> RateLimitConfig {
-        RateLimitConfig::new(10, 3600)
+        RateLimitConfig::new(100, 3600)
     }
 
     /// Subdomain claims: 3 per hour for free
