@@ -24,6 +24,8 @@ pub struct AppState {
     pub rate_limiter: RateLimiter,
     /// Local tunnel connections: subdomain -> tunnel sender
     pub tunnels: Arc<DashMap<String, TunnelHandle>>,
+    /// Shared HTTP client for inter-node communication (connection pooling)
+    pub http_client: reqwest::Client,
 }
 
 /// Handle to a tunnel connection
@@ -56,6 +58,15 @@ impl AppState {
     pub async fn new(config: Config, db: PgPool, redis: RedisClient) -> Self {
         let route_manager = Arc::new(RouteManager::new(redis.clone()));
         let rate_limiter = RateLimiter::new(Arc::new(redis.clone()));
+
+        // Create shared HTTP client with connection pooling
+        let http_client = reqwest::Client::builder()
+            .pool_max_idle_per_host(100)
+            .pool_idle_timeout(std::time::Duration::from_secs(90))
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+            .expect("Failed to create HTTP client");
+
         Self {
             config: Arc::new(config),
             db,
@@ -63,6 +74,7 @@ impl AppState {
             route_manager,
             rate_limiter,
             tunnels: Arc::new(DashMap::new()),
+            http_client,
         }
     }
 }
