@@ -136,7 +136,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Update version
@@ -145,10 +145,10 @@ jobs:
           cd packages/dvaar-cli
           npm version $VERSION --no-git-tag-version --allow-same-version
 
-      - name: Publish with provenance (OIDC)
+      - name: Publish (OIDC trusted publishing)
         run: |
           cd packages/dvaar-cli
-          npm publish --provenance --access public
+          npm publish --access public
 
   update-homebrew:
     name: Update Homebrew Formula
