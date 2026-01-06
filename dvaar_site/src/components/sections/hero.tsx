@@ -57,14 +57,14 @@ function InstallCommand() {
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: 0.4, duration: 0.8, ease }}
     >
-      {/* Tabs */}
-      <div className="flex border-b border-border">
+      {/* Tabs - horizontally scrollable on mobile */}
+      <div className="flex border-b border-border overflow-x-auto scrollbar-hide">
         {installCommands.map((cmd) => (
           <button
             key={cmd.id}
             onClick={() => setActiveTab(cmd.id)}
             className={cn(
-              "px-6 py-4 text-base font-medium transition-colors relative cursor-pointer",
+              "px-4 sm:px-6 py-3 sm:py-4 text-sm sm:text-base font-medium transition-colors relative cursor-pointer whitespace-nowrap flex-shrink-0",
               activeTab === cmd.id
                 ? "text-foreground"
                 : "text-muted-foreground hover:text-foreground"
@@ -81,9 +81,9 @@ function InstallCommand() {
         ))}
       </div>
 
-      {/* Command */}
-      <div className="flex items-center justify-between p-6 font-mono text-lg">
-        <code className="text-muted-foreground">
+      {/* Command - scrollable on mobile */}
+      <div className="flex items-center justify-between p-4 sm:p-6 font-mono text-sm sm:text-lg">
+        <code className="text-muted-foreground overflow-x-auto whitespace-nowrap flex-1 mr-2">
           {activeCommand?.command.split(" ")[0]}{" "}
           <span className="text-foreground font-semibold">
             {activeCommand?.command.split(" ").slice(1).join(" ")}
@@ -91,7 +91,7 @@ function InstallCommand() {
         </code>
         <button
           onClick={copyToClipboard}
-          className="ml-4 p-2 text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+          className="p-2 text-muted-foreground hover:text-foreground transition-colors cursor-pointer flex-shrink-0"
           aria-label="Copy to clipboard"
         >
           {copied ? (
