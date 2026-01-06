@@ -110,6 +110,7 @@ services:
       TUNNEL_DOMAIN: \${TUNNEL_DOMAIN}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./certs:/etc/caddy/certs:ro
       - caddy_data:/data
     depends_on:
       - dvaar
@@ -119,14 +120,20 @@ volumes:
 COMPOSEEOF
 
 cat > Caddyfile << 'CADDYEOF'
+# Edge node - uses Cloudflare Origin Certificate
 *.{$TUNNEL_DOMAIN} {
+    tls /etc/caddy/certs/origin.pem /etc/caddy/certs/origin-key.pem
     reverse_proxy dvaar:8080
 }
 
 {$TUNNEL_DOMAIN} {
+    tls /etc/caddy/certs/origin.pem /etc/caddy/certs/origin-key.pem
     redir https://dvaar.io{uri} permanent
 }
 CADDYEOF
+
+# Create certs directory (certs will be copied separately)
+mkdir -p /opt/dvaar/certs
 
 echo "[+] Configuring firewall..."
 ufw --force reset
@@ -144,6 +151,19 @@ docker compose up -d
 
 echo "[+] Edge node started!"
 EOF
+
+# Copy origin certificates from control plane to edge node
+log "Copying origin certificates to edge node..."
+if [[ -d /opt/dvaar/certs ]] && [[ -f /opt/dvaar/certs/origin.pem ]]; then
+    scp -i "$SSH_KEY" $SSH_OPTS /opt/dvaar/certs/origin.pem /opt/dvaar/certs/origin-key.pem "root@$NEW_SERVER_IP:/opt/dvaar/certs/"
+    ssh -i "$SSH_KEY" $SSH_OPTS "root@$NEW_SERVER_IP" "cd /opt/dvaar && docker compose restart caddy"
+    log "Certificates copied and Caddy restarted"
+else
+    warn "Origin certificates not found at /opt/dvaar/certs/"
+    warn "Please copy them manually:"
+    warn "  scp origin.pem origin-key.pem root@$NEW_SERVER_IP:/opt/dvaar/certs/"
+    warn "  ssh root@$NEW_SERVER_IP 'cd /opt/dvaar && docker compose restart caddy'"
+fi
 
 log "========================================="
 log "Edge node $NEW_SERVER_IP is now running!"
