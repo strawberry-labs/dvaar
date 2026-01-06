@@ -45,9 +45,9 @@ enum Commands {
         /// Target to tunnel to (port, host:port, URL, or directory path)
         target: String,
 
-        /// Request a specific subdomain
-        #[arg(short, long)]
-        domain: Option<String>,
+        /// Request a specific subdomain (e.g., -s myapp → myapp.dvaar.app)
+        #[arg(short = 's', long = "subdomain")]
+        subdomain: Option<String>,
 
         /// Enable basic authentication (format: user:password)
         #[arg(long)]
@@ -124,7 +124,7 @@ async fn main() -> Result<()> {
 
         Commands::Http {
             target,
-            domain,
+            subdomain,
             auth,
             host_header,
             detach,
@@ -132,7 +132,7 @@ async fn main() -> Result<()> {
         } => {
             let opts = commands::http::HttpOptions {
                 target,
-                domain,
+                subdomain,
                 auth,
                 host_header,
                 detach,

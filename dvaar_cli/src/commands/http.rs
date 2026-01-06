@@ -13,7 +13,7 @@ use std::process::{Command, Stdio};
 #[derive(Debug, Clone)]
 pub struct HttpOptions {
     pub target: String,
-    pub domain: Option<String>,
+    pub subdomain: Option<String>,
     pub auth: Option<String>,
     pub host_header: Option<String>,
     pub detach: bool,
@@ -51,7 +51,7 @@ pub async fn run(opts: HttpOptions) -> Result<()> {
     let mut client = TunnelClient::new(
         &config.websocket_url(),
         token,
-        opts.domain.clone(),
+        opts.subdomain.clone(),
         actual_target.clone(),
     );
 
@@ -146,9 +146,9 @@ async fn spawn_background(opts: HttpOptions) -> Result<()> {
     // Build command args (without -d flag)
     let mut args = vec!["http".to_string(), opts.target.clone()];
 
-    if let Some(domain) = &opts.domain {
-        args.push("--domain".to_string());
-        args.push(domain.clone());
+    if let Some(subdomain) = &opts.subdomain {
+        args.push("--subdomain".to_string());
+        args.push(subdomain.clone());
     }
 
     if let Some(auth) = &opts.auth {
