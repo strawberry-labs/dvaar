@@ -124,6 +124,7 @@ jobs:
     name: Publish to npm
     needs: release
     runs-on: ubuntu-latest
+    environment: Production
     permissions:
       contents: read
       id-token: write
@@ -144,12 +145,10 @@ jobs:
           cd packages/dvaar-cli
           npm version $VERSION --no-git-tag-version
 
-      - name: Publish with provenance
+      - name: Publish with provenance (OIDC)
         run: |
           cd packages/dvaar-cli
           npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   update-homebrew:
     name: Update Homebrew Formula
