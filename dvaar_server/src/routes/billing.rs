@@ -218,7 +218,8 @@ async fn list_plans() -> Response {
                 "price": 0,
                 "features": {
                     "tunnels_per_hour": 5,
-                    "requests_per_min": 60,
+                    "requests_per_min": 300,
+                    "bandwidth_gb": 1,
                     "custom_domains": false,
                     "reserved_subdomains": false
                 }
@@ -229,7 +230,8 @@ async fn list_plans() -> Response {
                 "price": 5,
                 "features": {
                     "tunnels_per_hour": 20,
-                    "requests_per_min": 600,
+                    "requests_per_min": 1000,
+                    "bandwidth_gb": 50,
                     "custom_domains": true,
                     "reserved_subdomains": true
                 }
@@ -240,7 +242,8 @@ async fn list_plans() -> Response {
                 "price": 15,
                 "features": {
                     "tunnels_per_hour": 100,
-                    "requests_per_min": 3000,
+                    "requests_per_min": 5000,
+                    "bandwidth_gb": 500,
                     "custom_domains": true,
                     "reserved_subdomains": true,
                     "team_members": 5

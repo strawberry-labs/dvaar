@@ -213,6 +213,11 @@ pub mod constants {
 
     /// Protocol version
     pub const PROTOCOL_VERSION: &str = "1.0.0";
+
+    /// Bandwidth limits (bytes per month)
+    pub const BANDWIDTH_FREE: u64 = 1 * 1024 * 1024 * 1024; // 1 GB
+    pub const BANDWIDTH_HOBBY: u64 = 50 * 1024 * 1024 * 1024; // 50 GB
+    pub const BANDWIDTH_PRO: u64 = 500 * 1024 * 1024 * 1024; // 500 GB
 }
 
 #[cfg(test)]

@@ -121,6 +121,42 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         Ok(_) => {}
     }
 
+    // Check bandwidth limit
+    let bandwidth_limit = if user.subscription.as_deref() == Some("pro") {
+        constants::BANDWIDTH_PRO
+    } else if user.subscription.as_deref() == Some("hobby") {
+        constants::BANDWIDTH_HOBBY
+    } else {
+        constants::BANDWIDTH_FREE
+    };
+
+    match state.route_manager.get_usage(&user.id.to_string()).await {
+        Ok(current_usage) if current_usage >= bandwidth_limit => {
+            let limit_gb = bandwidth_limit / (1024 * 1024 * 1024);
+            tracing::warn!(
+                "Bandwidth limit exceeded for user {}: {} bytes / {} GB",
+                user.email,
+                current_usage,
+                limit_gb
+            );
+            let error = ServerHello {
+                assigned_domain: String::new(),
+                error: Some(format!(
+                    "Monthly bandwidth limit exceeded ({} GB). Upgrade your plan at https://dvaar.io/billing",
+                    limit_gb
+                )),
+                server_version: constants::PROTOCOL_VERSION.to_string(),
+            };
+            let _ = send_packet(&mut sender, ControlPacket::InitAck(error)).await;
+            return;
+        }
+        Err(e) => {
+            tracing::error!("Bandwidth check failed: {}", e);
+            // Continue anyway - fail open
+        }
+        Ok(_) => {}
+    }
+
     // Generate or validate subdomain
     let subdomain = match assign_subdomain(&state, &init_packet, &user.id.to_string()).await {
         Ok(s) => s,
