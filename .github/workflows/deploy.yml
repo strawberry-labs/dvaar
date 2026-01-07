@@ -87,7 +87,7 @@ jobs:
             cd /opt/dvaar
             docker compose pull
             docker compose up -d --remove-orphans
-            docker system prune -f
+            docker system prune -f || true
 
   deploy-edge-nodes:
     needs: build
@@ -110,4 +110,4 @@ jobs:
             cd /opt/dvaar
             docker compose pull
             docker compose up -d dvaar caddy
-            docker system prune -f
+            docker system prune -f || true
