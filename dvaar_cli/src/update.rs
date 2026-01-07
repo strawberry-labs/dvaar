@@ -160,16 +160,18 @@ pub async fn check_for_updates_blocking() -> Result<Option<String>> {
 /// Print update available message
 fn print_update_message(latest_version: &str) {
     eprintln!();
-    eprintln!("\x1b[33m╭─────────────────────────────────────────────╮\x1b[0m");
+    eprintln!("\x1b[33m╭───────────────────────────────────────────────╮\x1b[0m");
     eprintln!(
-        "\x1b[33m│\x1b[0m  A new version of dvaar is available: \x1b[32m{}\x1b[0m  \x1b[33m│\x1b[0m",
+        "\x1b[33m│\x1b[0m  A new version of dvaar is available: \x1b[32m{}\x1b[0m    \x1b[33m│\x1b[0m",
         latest_version
     );
-    eprintln!("\x1b[33m│\x1b[0m  You have: {}                              \x1b[33m│\x1b[0m", CURRENT_VERSION);
-    eprintln!("\x1b[33m│\x1b[0m                                             \x1b[33m│\x1b[0m");
-    eprintln!("\x1b[33m│\x1b[0m  Update with:                               \x1b[33m│\x1b[0m");
-    eprintln!("\x1b[33m│\x1b[0m  \x1b[36mcurl -sSL https://dvaar.io/install.sh | bash\x1b[0m \x1b[33m│\x1b[0m");
-    eprintln!("\x1b[33m╰─────────────────────────────────────────────╯\x1b[0m");
+    eprintln!("\x1b[33m│\x1b[0m  You have: {}                                \x1b[33m│\x1b[0m", CURRENT_VERSION);
+    eprintln!("\x1b[33m│\x1b[0m                                               \x1b[33m│\x1b[0m");
+    eprintln!("\x1b[33m│\x1b[0m  Update with:  \x1b[36mdvaar update\x1b[0m                   \x1b[33m│\x1b[0m");
+    eprintln!("\x1b[33m│\x1b[0m                                               \x1b[33m│\x1b[0m");
+    eprintln!("\x1b[33m│\x1b[0m  Or reinstall:                                \x1b[33m│\x1b[0m");
+    eprintln!("\x1b[33m│\x1b[0m  \x1b[36mcurl -sSL https://dvaar.io/install.sh | bash\x1b[0m   \x1b[33m│\x1b[0m");
+    eprintln!("\x1b[33m╰───────────────────────────────────────────────╯\x1b[0m");
     eprintln!();
 }
 
