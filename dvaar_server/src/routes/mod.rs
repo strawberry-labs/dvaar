@@ -32,26 +32,50 @@ pub struct AppState {
 #[derive(Debug)]
 pub struct TunnelHandle {
     /// Channel to send HTTP requests to the tunnel
-    pub request_tx: mpsc::Sender<TunnelRequest>,
+    pub request_tx: mpsc::Sender<TunnelCommand>,
     /// User ID that owns this tunnel
     pub user_id: String,
 }
 
-/// A request to be sent through the tunnel
+/// A request to be sent through the tunnel (headers only)
 #[derive(Debug)]
 pub struct TunnelRequest {
-    /// The HTTP request packet
+    /// The HTTP request packet (headers only)
     pub request: dvaar_common::HttpRequestPacket,
-    /// Channel to receive the response
-    pub response_tx: tokio::sync::oneshot::Sender<TunnelResponse>,
+    /// Channel to receive streaming response chunks
+    pub response_tx: mpsc::Sender<StreamChunk>,
 }
 
-/// Response from the tunnel
+/// Commands sent from ingress/proxy to the tunnel handler
 #[derive(Debug)]
-pub enum TunnelResponse {
-    Success(dvaar_common::HttpResponsePacket),
+pub enum TunnelCommand {
+    /// New HTTP request (headers only)
+    Request(TunnelRequest),
+    /// Request body chunk
+    Data { stream_id: String, data: Vec<u8> },
+    /// Request body finished
+    End { stream_id: String },
+    /// WebSocket frame from the client
+    WebSocketFrame { stream_id: String, data: Vec<u8>, is_binary: bool },
+    /// WebSocket closed by client
+    WebSocketClose { stream_id: String, code: Option<u16>, reason: Option<String> },
+}
+
+/// A chunk of streaming response data
+#[derive(Debug, Clone)]
+pub enum StreamChunk {
+    /// Response headers (sent first)
+    Headers(dvaar_common::HttpResponsePacket),
+    /// Body data chunk
+    Data(Vec<u8>),
+    /// End of stream
+    End,
+    /// WebSocket frame (after upgrade)
+    WebSocketFrame { data: Vec<u8>, is_binary: bool },
+    /// WebSocket closed
+    WebSocketClose { code: Option<u16>, reason: Option<String> },
+    /// Error occurred
     Error(String),
-    Timeout,
 }
 
 impl AppState {

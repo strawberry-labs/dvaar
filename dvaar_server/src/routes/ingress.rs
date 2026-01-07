@@ -1,9 +1,10 @@
 //! Public ingress handler - handles incoming HTTP requests to tunneled services
 
 use crate::db::queries;
-use crate::routes::{AppState, TunnelRequest, TunnelResponse};
+use crate::routes::{AppState, StreamChunk, TunnelCommand, TunnelRequest};
 use axum::{
     body::Body,
+    extract::ws::{Message, WebSocket, WebSocketUpgrade},
     extract::ConnectInfo,
     extract::State,
     http::{Request, Response, StatusCode},
@@ -11,11 +12,15 @@ use axum::{
 };
 use axum_extra::extract::Host;
 use dvaar_common::{constants, HttpRequestPacket, new_stream_id};
+use futures_util::{SinkExt, StreamExt};
+use http_body_util::BodyExt;
 use std::net::SocketAddr;
-use std::time::Duration;
-use tokio::sync::oneshot;
+use tokio::sync::mpsc;
+use tokio::net::TcpStream;
+use tokio_tungstenite::{tungstenite, MaybeTlsStream, WebSocketStream};
 
 /// Rate limit error response
+#[allow(dead_code)]
 fn rate_limit_response(reset_in_secs: u64) -> Response<Body> {
     let body = format!(
         "Rate limit exceeded. Try again in {} seconds.",
@@ -105,25 +110,31 @@ pub async fn handle_ingress(
     }
 }
 
-/// Forward request to a local tunnel
+/// Forward request to a local tunnel with streaming support
 async fn forward_to_local_tunnel(
     handle: &crate::routes::TunnelHandle,
     request: Request<Body>,
 ) -> Response<Body> {
-    // Convert HTTP request to packet
     let stream_id = new_stream_id();
-    let (parts, body) = request.into_parts();
+    let (mut parts, body) = request.into_parts();
 
-    // Collect body
-    let body_bytes = match axum::body::to_bytes(body, 10 * 1024 * 1024).await {
-        Ok(b) => b.to_vec(),
-        Err(e) => {
-            tracing::error!("Failed to read request body: {}", e);
-            return (StatusCode::BAD_REQUEST, "Failed to read body").into_response();
+    let ws_upgrade = if is_websocket_upgrade_request(&parts.headers) {
+        match <WebSocketUpgrade as axum::extract::FromRequestParts<()>>::from_request_parts(
+            &mut parts,
+            &(),
+        )
+        .await
+        {
+            Ok(upgrade) => Some(upgrade),
+            Err(err) => {
+                tracing::warn!("WebSocket upgrade rejected: {}", err);
+                return (StatusCode::BAD_REQUEST, "Invalid WebSocket request").into_response();
+            }
         }
+    } else {
+        None
     };
 
-    // Build headers
     let headers: Vec<(String, String)> = parts
         .headers
         .iter()
@@ -139,62 +150,213 @@ async fn forward_to_local_tunnel(
             .map(|pq| pq.to_string())
             .unwrap_or_else(|| "/".to_string()),
         headers,
-        body: body_bytes,
     };
 
-    // Create response channel
-    let (response_tx, response_rx) = oneshot::channel();
-
+    let (response_tx, mut response_rx) = mpsc::channel::<StreamChunk>(32);
     let tunnel_request = TunnelRequest {
         request: http_request,
         response_tx,
     };
 
-    // Send to tunnel
-    if handle.request_tx.send(tunnel_request).await.is_err() {
+    if handle
+        .request_tx
+        .send(TunnelCommand::Request(tunnel_request))
+        .await
+        .is_err()
+    {
         return (StatusCode::BAD_GATEWAY, "Tunnel disconnected").into_response();
     }
 
-    // Wait for response with timeout
-    match tokio::time::timeout(Duration::from_secs(60), response_rx).await {
-        Ok(Ok(TunnelResponse::Success(response))) => {
-            build_http_response(response)
+    let request_tx = handle.request_tx.clone();
+    let stream_id_for_body = stream_id.clone();
+    tokio::spawn(async move {
+        let mut body_stream = body.into_data_stream();
+        while let Some(chunk_result) = body_stream.next().await {
+            match chunk_result {
+                Ok(chunk) => {
+                    if request_tx
+                        .send(TunnelCommand::Data {
+                            stream_id: stream_id_for_body.clone(),
+                            data: chunk.to_vec(),
+                        })
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to read request body: {}", e);
+                    break;
+                }
+            }
         }
-        Ok(Ok(TunnelResponse::Error(e))) => {
+        let _ = request_tx
+            .send(TunnelCommand::End {
+                stream_id: stream_id_for_body,
+            })
+            .await;
+    });
+
+    let first_chunk = match response_rx.recv().await {
+        Some(chunk) => chunk,
+        None => {
+            return (StatusCode::BAD_GATEWAY, "No response from tunnel").into_response();
+        }
+    };
+
+    let headers_packet = match first_chunk {
+        StreamChunk::Headers(h) => h,
+        StreamChunk::Error(e) => {
             tracing::error!("Tunnel error: {}", e);
-            (StatusCode::BAD_GATEWAY, "Tunnel error").into_response()
+            return (StatusCode::BAD_GATEWAY, "Tunnel error").into_response();
         }
-        Ok(Ok(TunnelResponse::Timeout)) => {
-            (StatusCode::GATEWAY_TIMEOUT, "Request timeout").into_response()
+        _ => {
+            tracing::error!("Expected Headers chunk, got something else");
+            return (StatusCode::BAD_GATEWAY, "Protocol error").into_response();
         }
-        Ok(Err(_)) => {
-            (StatusCode::BAD_GATEWAY, "Response channel closed").into_response()
+    };
+
+    if headers_packet.is_websocket_upgrade() {
+        let Some(ws_upgrade) = ws_upgrade else {
+            return (StatusCode::BAD_GATEWAY, "WebSocket upgrade failed").into_response();
+        };
+
+        let mut ws_upgrade = ws_upgrade;
+        if let Some(protocol) = headers_packet
+            .headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("sec-websocket-protocol"))
+            .map(|(_, v)| v.to_string())
+        {
+            ws_upgrade = ws_upgrade.protocols([protocol]);
         }
-        Err(_) => {
-            (StatusCode::GATEWAY_TIMEOUT, "Request timeout").into_response()
-        }
+
+        let request_tx = handle.request_tx.clone();
+        let stream_id_clone = stream_id.clone();
+        return ws_upgrade.on_upgrade(move |socket| async move {
+            bridge_websocket(socket, response_rx, request_tx, stream_id_clone).await;
+        });
     }
+
+    let status = StatusCode::from_u16(headers_packet.status).unwrap_or(StatusCode::OK);
+    let mut builder = Response::builder().status(status);
+
+    for (key, value) in &headers_packet.headers {
+        builder = builder.header(key.as_str(), value.as_str());
+    }
+
+    let body_stream = async_stream::stream! {
+        while let Some(chunk) = response_rx.recv().await {
+            match chunk {
+                StreamChunk::Data(data) => {
+                    yield Ok::<_, std::io::Error>(axum::body::Bytes::from(data));
+                }
+                StreamChunk::End => {
+                    break;
+                }
+                StreamChunk::Error(e) => {
+                    tracing::error!("Stream error: {}", e);
+                    break;
+                }
+                _ => {}
+            }
+        }
+    };
+
+    builder
+        .body(Body::from_stream(body_stream))
+        .unwrap_or_else(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Response build failed").into_response())
 }
 
-/// Forward request to a remote node
+/// Forward request to a remote node with streaming support
 async fn forward_to_remote_node(
     state: &AppState,
     subdomain: &str,
     route_info: &dvaar_common::RouteInfo,
     request: Request<Body>,
 ) -> Response<Body> {
-    let (parts, body) = request.into_parts();
+    let (mut parts, body) = request.into_parts();
 
-    // Collect body
-    let body_bytes = match axum::body::to_bytes(body, 10 * 1024 * 1024).await {
-        Ok(b) => b,
-        Err(e) => {
-            tracing::error!("Failed to read request body: {}", e);
-            return (StatusCode::BAD_REQUEST, "Failed to read body").into_response();
+    if is_websocket_upgrade_request(&parts.headers) {
+        let ws_upgrade = match <WebSocketUpgrade as axum::extract::FromRequestParts<()>>::from_request_parts(
+            &mut parts,
+            &(),
+        )
+        .await
+        {
+            Ok(upgrade) => upgrade,
+            Err(err) => {
+                tracing::warn!("WebSocket upgrade rejected: {}", err);
+                return (StatusCode::BAD_REQUEST, "Invalid WebSocket request").into_response();
+            }
+        };
+
+        let proxy_url = format!(
+            "ws://{}:{}/_internal/proxy{}",
+            route_info.node_ip,
+            route_info.internal_port,
+            parts
+                .uri
+                .path_and_query()
+                .map(|pq| pq.to_string())
+                .unwrap_or_else(|| "/".to_string())
+        );
+
+        let mut ws_request = tokio_tungstenite::tungstenite::http::Request::builder()
+            .method("GET")
+            .uri(&proxy_url);
+
+        for (key, value) in &parts.headers {
+            if key.as_str().eq_ignore_ascii_case("host") {
+                continue;
+            }
+            if let Ok(v) = value.to_str() {
+                ws_request = ws_request.header(key.as_str(), v);
+            }
         }
-    };
 
-    // Build proxy URL
+        ws_request = ws_request
+            .header(constants::CLUSTER_SECRET_HEADER, &state.config.cluster_secret)
+            .header(
+                constants::ORIGINAL_HOST_HEADER,
+                state.config.full_domain(subdomain),
+            );
+
+        let ws_request = match ws_request.body(()) {
+            Ok(req) => req,
+            Err(e) => {
+                tracing::error!("Failed to build WebSocket request: {}", e);
+                return (StatusCode::BAD_GATEWAY, "WebSocket request failed").into_response();
+            }
+        };
+
+        match tokio_tungstenite::connect_async(ws_request).await {
+            Ok((remote_socket, response)) => {
+                if response.status() != tokio_tungstenite::tungstenite::http::StatusCode::SWITCHING_PROTOCOLS {
+                    return (StatusCode::BAD_GATEWAY, "WebSocket upgrade failed").into_response();
+                }
+
+                let mut ws_upgrade = ws_upgrade;
+                if let Some(protocol) = response
+                    .headers()
+                    .get("sec-websocket-protocol")
+                    .and_then(|value| value.to_str().ok())
+                {
+                    ws_upgrade = ws_upgrade.protocols([protocol.to_string()]);
+                }
+
+                return ws_upgrade.on_upgrade(move |socket| async move {
+                    bridge_websocket_to_remote(socket, remote_socket).await;
+                });
+            }
+            Err(e) => {
+                tracing::error!("Proxy WebSocket connection failed: {}", e);
+                return (StatusCode::BAD_GATEWAY, "Remote node unavailable").into_response();
+            }
+        }
+    }
+
     let proxy_url = format!(
         "http://{}:{}/_internal/proxy{}",
         route_info.node_ip,
@@ -206,42 +368,47 @@ async fn forward_to_remote_node(
             .unwrap_or_else(|| "/".to_string())
     );
 
-    // Forward request to remote node (using shared client with connection pooling)
     let mut proxy_request = state.http_client.request(
         reqwest::Method::from_bytes(parts.method.as_str().as_bytes()).unwrap_or(reqwest::Method::GET),
         &proxy_url,
     );
 
-    // Copy headers
     for (key, value) in &parts.headers {
         if let Ok(v) = value.to_str() {
             proxy_request = proxy_request.header(key.as_str(), v);
         }
     }
 
-    // Add cluster headers
+    let body_stream = body.into_data_stream().map(|result| {
+        result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+    });
+
     proxy_request = proxy_request
         .header(constants::CLUSTER_SECRET_HEADER, &state.config.cluster_secret)
         .header(
             constants::ORIGINAL_HOST_HEADER,
             state.config.full_domain(subdomain),
         )
-        .body(body_bytes.to_vec());
+        .body(reqwest::Body::wrap_stream(body_stream));
 
     match proxy_request.send().await {
         Ok(resp) => {
             let status = resp.status();
             let headers = resp.headers().clone();
-            let body = resp.bytes().await.unwrap_or_default();
 
-            let mut builder = Response::builder().status(StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::OK));
+            let body_stream = resp.bytes_stream().map(|result| {
+                result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+            });
+
+            let mut builder =
+                Response::builder().status(StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::OK));
 
             for (key, value) in headers.iter() {
                 builder = builder.header(key.as_str(), value.as_bytes());
             }
 
             builder
-                .body(Body::from(body))
+                .body(Body::from_stream(body_stream))
                 .unwrap_or_else(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Response build failed").into_response())
         }
         Err(e) => {
@@ -250,9 +417,6 @@ async fn forward_to_remote_node(
         }
     }
 }
-
-// TODO: Re-enable with caching when needed
-// async fn get_tunnel_owner_paid_status(state: &AppState, subdomain: &str) -> bool { ... }
 
 /// Extract subdomain from host
 fn extract_subdomain(host: &str, base_domain: &str) -> Option<String> {
@@ -274,16 +438,241 @@ fn extract_subdomain(host: &str, base_domain: &str) -> Option<String> {
     }
 }
 
-/// Build HTTP response from tunnel response packet
-fn build_http_response(packet: dvaar_common::HttpResponsePacket) -> Response<Body> {
-    let status = StatusCode::from_u16(packet.status).unwrap_or(StatusCode::OK);
-    let mut builder = Response::builder().status(status);
+fn is_websocket_upgrade_request(headers: &axum::http::HeaderMap) -> bool {
+    let has_upgrade_connection = headers
+        .get(axum::http::header::CONNECTION)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.to_ascii_lowercase().contains("upgrade"))
+        .unwrap_or(false);
 
-    for (key, value) in packet.headers {
-        builder = builder.header(key, value);
+    let has_websocket_upgrade = headers
+        .get(axum::http::header::UPGRADE)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.eq_ignore_ascii_case("websocket"))
+        .unwrap_or(false);
+
+    has_upgrade_connection && has_websocket_upgrade
+}
+
+async fn bridge_websocket(
+    socket: WebSocket,
+    mut response_rx: mpsc::Receiver<StreamChunk>,
+    request_tx: mpsc::Sender<TunnelCommand>,
+    stream_id: String,
+) {
+    let (mut ws_sender, mut ws_receiver) = socket.split();
+
+    let to_client = tokio::spawn(async move {
+        while let Some(chunk) = response_rx.recv().await {
+            match chunk {
+                StreamChunk::WebSocketFrame { data, is_binary } => {
+                    let message = if is_binary {
+                        Message::Binary(data.into())
+                    } else {
+                        match String::from_utf8(data) {
+                            Ok(text) => Message::Text(text.into()),
+                            Err(err) => {
+                                tracing::warn!("Invalid UTF-8 websocket frame: {}", err);
+                                continue;
+                            }
+                        }
+                    };
+
+                    if ws_sender.send(message).await.is_err() {
+                        break;
+                    }
+                }
+                StreamChunk::WebSocketClose { code, reason } => {
+                    let close_frame = code.map(|code| axum::extract::ws::CloseFrame {
+                        code,
+                        reason: reason.unwrap_or_default().into(),
+                    });
+                    let _ = ws_sender.send(Message::Close(close_frame)).await;
+                    break;
+                }
+                StreamChunk::Error(e) => {
+                    tracing::error!("WebSocket stream error: {}", e);
+                    let _ = ws_sender.send(Message::Close(None)).await;
+                    break;
+                }
+                StreamChunk::End => {}
+                _ => {}
+            }
+        }
+    });
+
+    let stream_id_for_tunnel = stream_id.clone();
+    let to_tunnel = tokio::spawn(async move {
+        let mut sent_close = false;
+        while let Some(message) = ws_receiver.next().await {
+            match message {
+                Ok(Message::Text(text)) => {
+                    if request_tx
+                        .send(TunnelCommand::WebSocketFrame {
+                            stream_id: stream_id_for_tunnel.clone(),
+                            data: text.as_bytes().to_vec(),
+                            is_binary: false,
+                        })
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                Ok(Message::Binary(data)) => {
+                    if request_tx
+                        .send(TunnelCommand::WebSocketFrame {
+                            stream_id: stream_id_for_tunnel.clone(),
+                            data: data.to_vec(),
+                            is_binary: true,
+                        })
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                Ok(Message::Close(frame)) => {
+                    let (code, reason) = frame
+                        .map(|frame| (Some(frame.code), Some(frame.reason.to_string())))
+                        .unwrap_or((None, None));
+                    let _ = request_tx
+                        .send(TunnelCommand::WebSocketClose {
+                            stream_id: stream_id_for_tunnel.clone(),
+                            code,
+                            reason,
+                        })
+                        .await;
+                    sent_close = true;
+                    break;
+                }
+                Ok(Message::Ping(_)) | Ok(Message::Pong(_)) => {}
+                Ok(_) => {}
+                Err(err) => {
+                    tracing::debug!("WebSocket receive error: {}", err);
+                    let _ = request_tx
+                        .send(TunnelCommand::WebSocketClose {
+                            stream_id: stream_id_for_tunnel.clone(),
+                            code: Some(1006),
+                            reason: Some("WebSocket receive error".to_string()),
+                        })
+                        .await;
+                    sent_close = true;
+                    break;
+                }
+            }
+        }
+
+        if !sent_close {
+            let _ = request_tx
+                .send(TunnelCommand::WebSocketClose {
+                    stream_id: stream_id_for_tunnel.clone(),
+                    code: Some(1006),
+                    reason: Some("Client websocket closed".to_string()),
+                })
+                .await;
+        }
+    });
+
+    let request_tx_for_close = request_tx.clone();
+    let stream_id_for_close = stream_id.clone();
+    tokio::select! {
+        _ = to_client => {
+            let _ = request_tx_for_close
+                .send(TunnelCommand::WebSocketClose {
+                    stream_id: stream_id_for_close,
+                    code: Some(1006),
+                    reason: Some("Client websocket closed".to_string()),
+                })
+                .await;
+            to_tunnel.abort();
+        }
+        _ = to_tunnel => {
+            to_client.abort();
+        }
     }
+}
 
-    builder
-        .body(Body::from(packet.body))
-        .unwrap_or_else(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Response build failed").into_response())
+async fn bridge_websocket_to_remote(
+    socket: WebSocket,
+    remote_socket: WebSocketStream<MaybeTlsStream<TcpStream>>,
+) {
+    let (mut client_sender, mut client_receiver) = socket.split();
+    let (mut remote_sender, mut remote_receiver) = remote_socket.split();
+
+    let client_to_remote = tokio::spawn(async move {
+        while let Some(message) = client_receiver.next().await {
+            let message = match message {
+                Ok(message) => message,
+                Err(err) => {
+                    tracing::debug!("Client websocket error: {}", err);
+                    break;
+                }
+            };
+
+            if let Some(outgoing) = axum_to_tungstenite_message(message) {
+                if remote_sender.send(outgoing).await.is_err() {
+                    break;
+                }
+            }
+        }
+    });
+
+    let remote_to_client = tokio::spawn(async move {
+        while let Some(message) = remote_receiver.next().await {
+            let message = match message {
+                Ok(message) => message,
+                Err(err) => {
+                    tracing::debug!("Remote websocket error: {}", err);
+                    break;
+                }
+            };
+
+            if let Some(outgoing) = tungstenite_to_axum_message(message) {
+                if client_sender.send(outgoing).await.is_err() {
+                    break;
+                }
+            }
+        }
+    });
+
+    tokio::select! {
+        _ = client_to_remote => {
+            remote_to_client.abort();
+        }
+        _ = remote_to_client => {
+            client_to_remote.abort();
+        }
+    }
+}
+
+fn axum_to_tungstenite_message(message: Message) -> Option<tungstenite::Message> {
+    match message {
+        Message::Text(text) => Some(tungstenite::Message::Text(text.to_string())),
+        Message::Binary(data) => Some(tungstenite::Message::Binary(data.to_vec())),
+        Message::Ping(data) => Some(tungstenite::Message::Ping(data.to_vec())),
+        Message::Pong(data) => Some(tungstenite::Message::Pong(data.to_vec())),
+        Message::Close(frame) => Some(tungstenite::Message::Close(frame.map(|frame| {
+            tungstenite::protocol::CloseFrame {
+                code: tungstenite::protocol::frame::coding::CloseCode::from(frame.code),
+                reason: frame.reason.to_string().into(),
+            }
+        }))),
+    }
+}
+
+fn tungstenite_to_axum_message(message: tungstenite::Message) -> Option<Message> {
+    match message {
+        tungstenite::Message::Text(text) => Some(Message::Text(text.into())),
+        tungstenite::Message::Binary(data) => Some(Message::Binary(data.into())),
+        tungstenite::Message::Ping(data) => Some(Message::Ping(data.into())),
+        tungstenite::Message::Pong(data) => Some(Message::Pong(data.into())),
+        tungstenite::Message::Close(frame) => Some(Message::Close(frame.map(|frame| {
+            axum::extract::ws::CloseFrame {
+                code: u16::from(frame.code),
+                reason: frame.reason.to_string().into(),
+            }
+        }))),
+        tungstenite::Message::Frame(_) => None,
+    }
 }

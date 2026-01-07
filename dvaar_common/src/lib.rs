@@ -30,20 +30,42 @@ pub enum ControlPacket {
     InitAck(ServerHello),
 
     /// HTTP request from server to client (client should forward to local upstream)
+    /// Body is streamed separately via Data packets, followed by End
     HttpRequest(HttpRequestPacket),
 
     /// HTTP response from client to server
+    /// Body is streamed separately via Data packets, followed by End
     HttpResponse(HttpResponsePacket),
 
-    /// Raw data chunk (bidirectional) - used for streaming
+    /// Raw data chunk (bidirectional) - used for streaming request/response bodies
     Data {
         stream_id: String,
         data: Vec<u8>,
     },
 
-    /// End of stream signal
+    /// End of stream signal - marks completion of request/response body
     End {
         stream_id: String,
+    },
+
+    /// WebSocket frame passthrough (for HMR, real-time features)
+    WebSocketFrame {
+        stream_id: String,
+        data: Vec<u8>,
+        is_binary: bool,
+    },
+
+    /// WebSocket connection closed
+    WebSocketClose {
+        stream_id: String,
+        code: Option<u16>,
+        reason: Option<String>,
+    },
+
+    /// Stream error - signals an error on a specific stream
+    StreamError {
+        stream_id: String,
+        error: String,
     },
 
     /// Keepalive ping
@@ -103,6 +125,7 @@ impl TunnelType {
 }
 
 /// HTTP request packet sent from server to client
+/// Note: Body is streamed separately via Data packets followed by End packet
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpRequestPacket {
     /// Unique identifier for this request/response pair
@@ -116,12 +139,10 @@ pub struct HttpRequestPacket {
 
     /// HTTP headers as key-value pairs
     pub headers: Vec<(String, String)>,
-
-    /// Request body (may be empty)
-    pub body: Vec<u8>,
 }
 
 /// HTTP response packet sent from client to server
+/// Note: Body is streamed separately via Data packets followed by End packet
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpResponsePacket {
     /// Matching stream_id from the request
@@ -132,9 +153,26 @@ pub struct HttpResponsePacket {
 
     /// Response headers
     pub headers: Vec<(String, String)>,
+}
 
-    /// Response body
-    pub body: Vec<u8>,
+impl HttpRequestPacket {
+    /// Check if this is a WebSocket upgrade request
+    pub fn is_websocket_upgrade(&self) -> bool {
+        let has_upgrade_connection = self.headers.iter().any(|(k, v)| {
+            k.eq_ignore_ascii_case("connection") && v.to_lowercase().contains("upgrade")
+        });
+        let has_websocket_upgrade = self.headers.iter().any(|(k, v)| {
+            k.eq_ignore_ascii_case("upgrade") && v.eq_ignore_ascii_case("websocket")
+        });
+        has_upgrade_connection && has_websocket_upgrade
+    }
+}
+
+impl HttpResponsePacket {
+    /// Check if this is a WebSocket upgrade response (101 Switching Protocols)
+    pub fn is_websocket_upgrade(&self) -> bool {
+        self.status == 101
+    }
 }
 
 impl ControlPacket {
@@ -217,8 +255,8 @@ pub mod constants {
     /// WebSocket ping interval
     pub const WS_PING_INTERVAL_SECONDS: u64 = 15;
 
-    /// Protocol version
-    pub const PROTOCOL_VERSION: &str = "1.0.0";
+    /// Protocol version - bumped for streaming support
+    pub const PROTOCOL_VERSION: &str = "2.0.0";
 
     /// Bandwidth limits (bytes per month)
     pub const BANDWIDTH_FREE: u64 = 1 * 1024 * 1024 * 1024; // 1 GB
@@ -273,7 +311,6 @@ mod tests {
                 ("Content-Type".to_string(), "application/json".to_string()),
                 ("Authorization".to_string(), "Bearer token".to_string()),
             ],
-            body: b"{\"key\": \"value\"}".to_vec(),
         });
 
         let bytes = packet.to_bytes().unwrap();
@@ -287,5 +324,30 @@ mod tests {
             }
             _ => panic!("Wrong packet type"),
         }
+    }
+
+    #[test]
+    fn test_websocket_upgrade_detection() {
+        let upgrade_request = HttpRequestPacket {
+            stream_id: new_stream_id(),
+            method: "GET".to_string(),
+            uri: "/_next/webpack-hmr".to_string(),
+            headers: vec![
+                ("Connection".to_string(), "Upgrade".to_string()),
+                ("Upgrade".to_string(), "websocket".to_string()),
+                ("Sec-WebSocket-Key".to_string(), "dGhlIHNhbXBsZSBub25jZQ==".to_string()),
+            ],
+        };
+        assert!(upgrade_request.is_websocket_upgrade());
+
+        let normal_request = HttpRequestPacket {
+            stream_id: new_stream_id(),
+            method: "GET".to_string(),
+            uri: "/api/data".to_string(),
+            headers: vec![
+                ("Content-Type".to_string(), "application/json".to_string()),
+            ],
+        };
+        assert!(!normal_request.is_websocket_upgrade());
     }
 }

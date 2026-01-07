@@ -1,9 +1,9 @@
-//! WebSocket tunnel handler
+//! WebSocket tunnel handler with streaming support
 
 use crate::abuse::{self, SubdomainCheck};
 use crate::db::queries;
 use crate::redis::{spawn_heartbeat, RouteManager};
-use crate::routes::{AppState, TunnelHandle, TunnelRequest, TunnelResponse};
+use crate::routes::{AppState, StreamChunk, TunnelCommand, TunnelHandle};
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
@@ -20,7 +20,13 @@ use rand::Rng;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{mpsc, watch, Mutex};
+
+#[derive(Debug)]
+struct StreamState {
+    response_tx: mpsc::Sender<StreamChunk>,
+    is_websocket: bool,
+}
 
 /// Build the tunnel router
 pub fn router() -> Router<AppState> {
@@ -96,13 +102,14 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     // Check rate limit for tunnel creation based on user's effective plan
     let is_paid = if let Some(expires_at) = user.plan_expires_at {
         if expires_at < chrono::Utc::now() {
-            false // Plan has expired, treat as free
+            false
         } else {
             user.is_paid()
         }
     } else {
         user.is_paid()
     };
+
     match state.rate_limiter.check_tunnel_creation(&user.id.to_string(), is_paid).await {
         Ok(result) if !result.allowed => {
             tracing::warn!(
@@ -125,15 +132,14 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         }
         Err(e) => {
             tracing::error!("Rate limit check failed: {}", e);
-            // Continue anyway - fail open for rate limiting
         }
         Ok(_) => {}
     }
 
-    // Check bandwidth limit based on user's effective plan (considering expiration)
+    // Check bandwidth limit
     let effective_plan = if let Some(expires_at) = user.plan_expires_at {
         if expires_at < chrono::Utc::now() {
-            "free" // Plan has expired
+            "free"
         } else {
             user.plan.as_str()
         }
@@ -169,7 +175,6 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         }
         Err(e) => {
             tracing::error!("Bandwidth check failed: {}", e);
-            // Continue anyway - fail open
         }
         Ok(_) => {}
     }
@@ -230,7 +235,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     );
 
     // Create channels for request/response handling
-    let (request_tx, mut request_rx) = mpsc::channel::<TunnelRequest>(32);
+    let (request_tx, mut request_rx) = mpsc::channel::<TunnelCommand>(32);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     // Register local tunnel handle
@@ -249,46 +254,159 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         shutdown_rx,
     );
 
-    // Pending responses: stream_id -> response sender
-    let pending_responses: Arc<tokio::sync::Mutex<HashMap<String, oneshot::Sender<TunnelResponse>>>> =
-        Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    // Active streams: stream_id -> response channel
+    let active_streams: Arc<Mutex<HashMap<String, StreamState>>> =
+        Arc::new(Mutex::new(HashMap::new()));
 
-    // Handle bidirectional communication
-    let pending_clone = pending_responses.clone();
-
-    // Task to send requests to client
-    let sender = Arc::new(tokio::sync::Mutex::new(sender));
+    // WebSocket sender shared between tasks
+    let sender = Arc::new(Mutex::new(sender));
     let sender_clone = sender.clone();
 
+    // Task to send requests to client
+    let active_streams_clone = active_streams.clone();
     let send_task = tokio::spawn(async move {
-        while let Some(tunnel_req) = request_rx.recv().await {
-            let packet = ControlPacket::HttpRequest(tunnel_req.request.clone());
-            let stream_id = tunnel_req.request.stream_id.clone();
+        while let Some(command) = request_rx.recv().await {
+            match command {
+                TunnelCommand::Request(tunnel_req) => {
+                    let stream_id = tunnel_req.request.stream_id.clone();
 
-            // Store response sender
-            {
-                let mut pending = pending_clone.lock().await;
-                pending.insert(stream_id.clone(), tunnel_req.response_tx);
-            }
+                    {
+                        let mut streams = active_streams_clone.lock().await;
+                        streams.insert(
+                            stream_id.clone(),
+                            StreamState {
+                                response_tx: tunnel_req.response_tx,
+                                is_websocket: false,
+                            },
+                        );
+                    }
 
-            // Send to client
-            let mut sender = sender_clone.lock().await;
-            if send_packet(&mut *sender, packet).await.is_err() {
-                // Remove pending response on send failure
-                let mut pending = pending_clone.lock().await;
-                if let Some(tx) = pending.remove(&stream_id) {
-                    let _ = tx.send(TunnelResponse::Error("Send failed".to_string()));
+                    let packet = ControlPacket::HttpRequest(tunnel_req.request);
+                    let send_result = {
+                        let mut sender = sender_clone.lock().await;
+                        send_packet(&mut *sender, packet).await
+                    };
+
+                    if send_result.is_err() {
+                        let tx = {
+                            let mut streams = active_streams_clone.lock().await;
+                            streams.remove(&stream_id).map(|(_, state)| state.response_tx)
+                        };
+                        if let Some(tx) = tx {
+                            let _ = tx
+                                .send(StreamChunk::Error("Send failed".to_string()))
+                                .await;
+                        }
+                        break;
+                    }
                 }
-                break;
+                TunnelCommand::Data { stream_id, data } => {
+                    let packet = ControlPacket::Data {
+                        stream_id: stream_id.clone(),
+                        data,
+                    };
+                    let send_result = {
+                        let mut sender = sender_clone.lock().await;
+                        send_packet(&mut *sender, packet).await
+                    };
+                    if send_result.is_err() {
+                        let tx = {
+                            let mut streams = active_streams_clone.lock().await;
+                            streams.remove(&stream_id).map(|(_, state)| state.response_tx)
+                        };
+                        if let Some(tx) = tx {
+                            let _ = tx
+                                .send(StreamChunk::Error("Send failed".to_string()))
+                                .await;
+                        }
+                        break;
+                    }
+                }
+                TunnelCommand::End { stream_id } => {
+                    let packet = ControlPacket::End {
+                        stream_id: stream_id.clone(),
+                    };
+                    let send_result = {
+                        let mut sender = sender_clone.lock().await;
+                        send_packet(&mut *sender, packet).await
+                    };
+                    if send_result.is_err() {
+                        let tx = {
+                            let mut streams = active_streams_clone.lock().await;
+                            streams.remove(&stream_id).map(|(_, state)| state.response_tx)
+                        };
+                        if let Some(tx) = tx {
+                            let _ = tx
+                                .send(StreamChunk::Error("Send failed".to_string()))
+                                .await;
+                        }
+                        break;
+                    }
+                }
+                TunnelCommand::WebSocketFrame {
+                    stream_id,
+                    data,
+                    is_binary,
+                } => {
+                    let packet = ControlPacket::WebSocketFrame {
+                        stream_id: stream_id.clone(),
+                        data,
+                        is_binary,
+                    };
+                    let send_result = {
+                        let mut sender = sender_clone.lock().await;
+                        send_packet(&mut *sender, packet).await
+                    };
+                    if send_result.is_err() {
+                        let tx = {
+                            let mut streams = active_streams_clone.lock().await;
+                            streams.remove(&stream_id).map(|(_, state)| state.response_tx)
+                        };
+                        if let Some(tx) = tx {
+                            let _ = tx
+                                .send(StreamChunk::Error("Send failed".to_string()))
+                                .await;
+                        }
+                        break;
+                    }
+                }
+                TunnelCommand::WebSocketClose {
+                    stream_id,
+                    code,
+                    reason,
+                } => {
+                    let packet = ControlPacket::WebSocketClose {
+                        stream_id: stream_id.clone(),
+                        code,
+                        reason,
+                    };
+                    let send_result = {
+                        let mut sender = sender_clone.lock().await;
+                        send_packet(&mut *sender, packet).await
+                    };
+                    if send_result.is_err() {
+                        let tx = {
+                            let mut streams = active_streams_clone.lock().await;
+                            streams.remove(&stream_id).map(|(_, state)| state.response_tx)
+                        };
+                        if let Some(tx) = tx {
+                            let _ = tx
+                                .send(StreamChunk::Error("Send failed".to_string()))
+                                .await;
+                        }
+                        break;
+                    }
+                }
             }
         }
     });
 
     // Task to receive responses from client
-    let pending_clone = pending_responses.clone();
+    let active_streams_clone = active_streams.clone();
     let route_manager_clone = state.route_manager.clone();
     let usage_is_paid = matches!(effective_plan, "hobby" | "pro");
     let usage_plan_expires_at = user.plan_expires_at;
+
     let recv_task = tokio::spawn(async move {
         let mut bandwidth_buffer = 0u64;
         let user_id = user.id.to_string();
@@ -309,7 +427,6 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
             // Track bandwidth
             bandwidth_buffer += data.len() as u64;
             if bandwidth_buffer >= 1_000_000 {
-                // Flush to Redis every 1MB
                 let usage_ttl_secs = usage_ttl_secs(usage_is_paid, usage_plan_expires_at);
                 let _ = route_manager_clone
                     .increment_usage(&user_id, bandwidth_buffer, usage_ttl_secs)
@@ -327,16 +444,90 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
 
             match packet {
                 ControlPacket::HttpResponse(response) => {
-                    let mut pending = pending_clone.lock().await;
-                    if let Some(tx) = pending.remove(&response.stream_id) {
-                        let _ = tx.send(TunnelResponse::Success(response));
+                    let (tx, is_websocket) = {
+                        let mut streams = active_streams_clone.lock().await;
+                        if let Some(state) = streams.get_mut(&response.stream_id) {
+                            if response.is_websocket_upgrade() {
+                                state.is_websocket = true;
+                            }
+                            (Some(state.response_tx.clone()), state.is_websocket)
+                        } else {
+                            (None, false)
+                        }
+                    };
+
+                    if let Some(tx) = tx {
+                        let _ = tx.send(StreamChunk::Headers(response)).await;
+                    }
+
+                    if is_websocket {
+                        continue;
                     }
                 }
+
+                ControlPacket::Data { stream_id, data } => {
+                    let tx = {
+                        let streams = active_streams_clone.lock().await;
+                        streams.get(&stream_id).map(|state| state.response_tx.clone())
+                    };
+                    if let Some(tx) = tx {
+                        let _ = tx.send(StreamChunk::Data(data)).await;
+                    }
+                }
+
+                ControlPacket::End { stream_id } => {
+                    let tx = {
+                        let mut streams = active_streams_clone.lock().await;
+                        match streams.get(&stream_id) {
+                            Some(state) if state.is_websocket => None,
+                            Some(_) => streams.remove(&stream_id).map(|(_, state)| state.response_tx),
+                            None => None,
+                        }
+                    };
+                    if let Some(tx) = tx {
+                        let _ = tx.send(StreamChunk::End).await;
+                    }
+                }
+
+                ControlPacket::WebSocketFrame { stream_id, data, is_binary } => {
+                    let tx = {
+                        let streams = active_streams_clone.lock().await;
+                        streams.get(&stream_id).map(|state| state.response_tx.clone())
+                    };
+                    if let Some(tx) = tx {
+                        let _ = tx
+                            .send(StreamChunk::WebSocketFrame { data, is_binary })
+                            .await;
+                    }
+                }
+
+                ControlPacket::WebSocketClose { stream_id, code, reason } => {
+                    let tx = {
+                        let mut streams = active_streams_clone.lock().await;
+                        streams.remove(&stream_id).map(|(_, state)| state.response_tx)
+                    };
+                    if let Some(tx) = tx {
+                        let _ = tx.send(StreamChunk::WebSocketClose { code, reason }).await;
+                    }
+                }
+
+                ControlPacket::StreamError { stream_id, error } => {
+                    let tx = {
+                        let mut streams = active_streams_clone.lock().await;
+                        streams.remove(&stream_id).map(|(_, state)| state.response_tx)
+                    };
+                    if let Some(tx) = tx {
+                        let _ = tx.send(StreamChunk::Error(error)).await;
+                    }
+                }
+
                 ControlPacket::Ping => {
                     let mut sender = sender.lock().await;
                     let _ = send_packet(&mut *sender, ControlPacket::Pong).await;
                 }
+
                 ControlPacket::Pong => {}
+
                 _ => {
                     tracing::debug!("Unexpected packet type from client");
                 }
@@ -349,6 +540,12 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
             let _ = route_manager_clone
                 .increment_usage(&user_id, bandwidth_buffer, usage_ttl_secs)
                 .await;
+        }
+
+        // Close all active streams
+        let mut streams = active_streams_clone.lock().await;
+        for (_, tx) in streams.drain() {
+            let _ = tx.send(StreamChunk::Error("Tunnel closed".to_string())).await;
         }
     });
 
@@ -392,7 +589,6 @@ async fn assign_subdomain(
             return Err("Custom subdomains require a paid plan".to_string());
         }
 
-        // Check against blocklist first
         match abuse::check_subdomain(requested) {
             SubdomainCheck::Blocked(reason) => {
                 tracing::warn!(
@@ -406,15 +602,12 @@ async fn assign_subdomain(
             SubdomainCheck::Allowed => {}
         }
 
-        // Check if already in use (in Redis)
         if let Ok(Some(route)) = state.route_manager.get_route(requested).await {
             if route.user_id != user_id {
                 return Err("Subdomain is in use by another user".to_string());
             }
-            // Same user reconnecting - allow
         }
 
-        // Check if reserved in database
         if let Ok(Some(domain)) = queries::check_subdomain_owner(&state.db, requested).await {
             if domain.user_id.to_string() != user_id {
                 return Err("Subdomain is reserved by another user".to_string());
@@ -423,25 +616,9 @@ async fn assign_subdomain(
 
         Ok(requested.clone())
     } else {
-        // Generate random subdomain
         let subdomain = generate_random_subdomain();
         Ok(subdomain)
     }
-}
-
-/// Check if subdomain is valid
-fn is_valid_subdomain(s: &str) -> bool {
-    if s.is_empty() || s.len() > 63 {
-        return false;
-    }
-
-    // Must start with letter, contain only alphanumeric and hyphens
-    let chars: Vec<char> = s.chars().collect();
-    if !chars[0].is_ascii_lowercase() {
-        return false;
-    }
-
-    s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
 /// Generate a random subdomain
