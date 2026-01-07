@@ -12,7 +12,6 @@ use axum::{
 };
 use dvaar_common::{constants, HttpRequestPacket, new_stream_id};
 use futures_util::{SinkExt, StreamExt};
-use http_body_util::BodyExt;
 use tokio::sync::mpsc;
 
 /// Build the internal proxy router
@@ -269,6 +268,12 @@ async fn bridge_websocket(
 ) {
     let (mut ws_sender, mut ws_receiver) = socket.split();
 
+    // Clone before spawning to avoid move issues
+    let request_tx_for_tunnel = request_tx.clone();
+    let request_tx_for_close = request_tx;
+    let stream_id_for_tunnel = stream_id.clone();
+    let stream_id_for_close = stream_id;
+
     let to_client = tokio::spawn(async move {
         while let Some(chunk) = response_rx.recv().await {
             match chunk {
@@ -308,13 +313,12 @@ async fn bridge_websocket(
         }
     });
 
-    let stream_id_for_tunnel = stream_id.clone();
     let to_tunnel = tokio::spawn(async move {
         let mut sent_close = false;
         while let Some(message) = ws_receiver.next().await {
             match message {
                 Ok(Message::Text(text)) => {
-                    if request_tx
+                    if request_tx_for_tunnel
                         .send(TunnelCommand::WebSocketFrame {
                             stream_id: stream_id_for_tunnel.clone(),
                             data: text.as_bytes().to_vec(),
@@ -327,7 +331,7 @@ async fn bridge_websocket(
                     }
                 }
                 Ok(Message::Binary(data)) => {
-                    if request_tx
+                    if request_tx_for_tunnel
                         .send(TunnelCommand::WebSocketFrame {
                             stream_id: stream_id_for_tunnel.clone(),
                             data: data.to_vec(),
@@ -343,7 +347,7 @@ async fn bridge_websocket(
                     let (code, reason) = frame
                         .map(|frame| (Some(frame.code), Some(frame.reason.to_string())))
                         .unwrap_or((None, None));
-                    let _ = request_tx
+                    let _ = request_tx_for_tunnel
                         .send(TunnelCommand::WebSocketClose {
                             stream_id: stream_id_for_tunnel.clone(),
                             code,
@@ -354,10 +358,9 @@ async fn bridge_websocket(
                     break;
                 }
                 Ok(Message::Ping(_)) | Ok(Message::Pong(_)) => {}
-                Ok(_) => {}
                 Err(err) => {
                     tracing::debug!("WebSocket receive error: {}", err);
-                    let _ = request_tx
+                    let _ = request_tx_for_tunnel
                         .send(TunnelCommand::WebSocketClose {
                             stream_id: stream_id_for_tunnel.clone(),
                             code: Some(1006),
@@ -371,7 +374,7 @@ async fn bridge_websocket(
         }
 
         if !sent_close {
-            let _ = request_tx
+            let _ = request_tx_for_tunnel
                 .send(TunnelCommand::WebSocketClose {
                     stream_id: stream_id_for_tunnel.clone(),
                     code: Some(1006),
@@ -381,8 +384,6 @@ async fn bridge_websocket(
         }
     });
 
-    let request_tx_for_close = request_tx.clone();
-    let stream_id_for_close = stream_id.clone();
     tokio::select! {
         _ = to_client => {
             let _ = request_tx_for_close
@@ -392,10 +393,7 @@ async fn bridge_websocket(
                     reason: Some("Client websocket closed".to_string()),
                 })
                 .await;
-            to_tunnel.abort();
         }
-        _ = to_tunnel => {
-            to_client.abort();
-        }
+        _ = to_tunnel => {}
     }
 }

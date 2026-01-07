@@ -13,7 +13,6 @@ use axum::{
 use axum_extra::extract::Host;
 use dvaar_common::{constants, HttpRequestPacket, new_stream_id};
 use futures_util::{SinkExt, StreamExt};
-use http_body_util::BodyExt;
 use std::net::SocketAddr;
 use tokio::sync::mpsc;
 use tokio::net::TcpStream;
@@ -86,10 +85,6 @@ pub async fn handle_ingress(
     };
 
     tracing::debug!("Ingress request for subdomain: {}", subdomain);
-
-    // Request rate limiting disabled - bandwidth limits are the real gate
-    // Keeping this code commented for future use if needed
-    // match state.rate_limiter.check_requests(&subdomain, false).await { ... }
 
     // Check 1: Local tunnel
     if let Some(handle) = state.tunnels.get(&subdomain) {
@@ -462,6 +457,12 @@ async fn bridge_websocket(
 ) {
     let (mut ws_sender, mut ws_receiver) = socket.split();
 
+    // Clone before spawning to avoid move issues
+    let request_tx_for_tunnel = request_tx.clone();
+    let request_tx_for_close = request_tx;
+    let stream_id_for_tunnel = stream_id.clone();
+    let stream_id_for_close = stream_id;
+
     let to_client = tokio::spawn(async move {
         while let Some(chunk) = response_rx.recv().await {
             match chunk {
@@ -501,13 +502,12 @@ async fn bridge_websocket(
         }
     });
 
-    let stream_id_for_tunnel = stream_id.clone();
     let to_tunnel = tokio::spawn(async move {
         let mut sent_close = false;
         while let Some(message) = ws_receiver.next().await {
             match message {
                 Ok(Message::Text(text)) => {
-                    if request_tx
+                    if request_tx_for_tunnel
                         .send(TunnelCommand::WebSocketFrame {
                             stream_id: stream_id_for_tunnel.clone(),
                             data: text.as_bytes().to_vec(),
@@ -520,7 +520,7 @@ async fn bridge_websocket(
                     }
                 }
                 Ok(Message::Binary(data)) => {
-                    if request_tx
+                    if request_tx_for_tunnel
                         .send(TunnelCommand::WebSocketFrame {
                             stream_id: stream_id_for_tunnel.clone(),
                             data: data.to_vec(),
@@ -536,7 +536,7 @@ async fn bridge_websocket(
                     let (code, reason) = frame
                         .map(|frame| (Some(frame.code), Some(frame.reason.to_string())))
                         .unwrap_or((None, None));
-                    let _ = request_tx
+                    let _ = request_tx_for_tunnel
                         .send(TunnelCommand::WebSocketClose {
                             stream_id: stream_id_for_tunnel.clone(),
                             code,
@@ -547,10 +547,9 @@ async fn bridge_websocket(
                     break;
                 }
                 Ok(Message::Ping(_)) | Ok(Message::Pong(_)) => {}
-                Ok(_) => {}
                 Err(err) => {
                     tracing::debug!("WebSocket receive error: {}", err);
-                    let _ = request_tx
+                    let _ = request_tx_for_tunnel
                         .send(TunnelCommand::WebSocketClose {
                             stream_id: stream_id_for_tunnel.clone(),
                             code: Some(1006),
@@ -564,7 +563,7 @@ async fn bridge_websocket(
         }
 
         if !sent_close {
-            let _ = request_tx
+            let _ = request_tx_for_tunnel
                 .send(TunnelCommand::WebSocketClose {
                     stream_id: stream_id_for_tunnel.clone(),
                     code: Some(1006),
@@ -574,8 +573,6 @@ async fn bridge_websocket(
         }
     });
 
-    let request_tx_for_close = request_tx.clone();
-    let stream_id_for_close = stream_id.clone();
     tokio::select! {
         _ = to_client => {
             let _ = request_tx_for_close
@@ -585,11 +582,8 @@ async fn bridge_websocket(
                     reason: Some("Client websocket closed".to_string()),
                 })
                 .await;
-            to_tunnel.abort();
         }
-        _ = to_tunnel => {
-            to_client.abort();
-        }
+        _ = to_tunnel => {}
     }
 }
 
@@ -637,21 +631,17 @@ async fn bridge_websocket_to_remote(
     });
 
     tokio::select! {
-        _ = client_to_remote => {
-            remote_to_client.abort();
-        }
-        _ = remote_to_client => {
-            client_to_remote.abort();
-        }
+        _ = client_to_remote => {}
+        _ = remote_to_client => {}
     }
 }
 
 fn axum_to_tungstenite_message(message: Message) -> Option<tungstenite::Message> {
     match message {
-        Message::Text(text) => Some(tungstenite::Message::Text(text.to_string())),
-        Message::Binary(data) => Some(tungstenite::Message::Binary(data.to_vec())),
-        Message::Ping(data) => Some(tungstenite::Message::Ping(data.to_vec())),
-        Message::Pong(data) => Some(tungstenite::Message::Pong(data.to_vec())),
+        Message::Text(text) => Some(tungstenite::Message::Text(text.to_string().into())),
+        Message::Binary(data) => Some(tungstenite::Message::Binary(data.to_vec().into())),
+        Message::Ping(data) => Some(tungstenite::Message::Ping(data.to_vec().into())),
+        Message::Pong(data) => Some(tungstenite::Message::Pong(data.to_vec().into())),
         Message::Close(frame) => Some(tungstenite::Message::Close(frame.map(|frame| {
             tungstenite::protocol::CloseFrame {
                 code: tungstenite::protocol::frame::coding::CloseCode::from(frame.code),
@@ -663,10 +653,10 @@ fn axum_to_tungstenite_message(message: Message) -> Option<tungstenite::Message>
 
 fn tungstenite_to_axum_message(message: tungstenite::Message) -> Option<Message> {
     match message {
-        tungstenite::Message::Text(text) => Some(Message::Text(text.into())),
-        tungstenite::Message::Binary(data) => Some(Message::Binary(data.into())),
-        tungstenite::Message::Ping(data) => Some(Message::Ping(data.into())),
-        tungstenite::Message::Pong(data) => Some(Message::Pong(data.into())),
+        tungstenite::Message::Text(text) => Some(Message::Text(text.to_string().into())),
+        tungstenite::Message::Binary(data) => Some(Message::Binary(data.to_vec().into())),
+        tungstenite::Message::Ping(data) => Some(Message::Ping(data.to_vec().into())),
+        tungstenite::Message::Pong(data) => Some(Message::Pong(data.to_vec().into())),
         tungstenite::Message::Close(frame) => Some(Message::Close(frame.map(|frame| {
             axum::extract::ws::CloseFrame {
                 code: u16::from(frame.code),

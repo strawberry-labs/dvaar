@@ -290,7 +290,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                     if send_result.is_err() {
                         let tx = {
                             let mut streams = active_streams_clone.lock().await;
-                            streams.remove(&stream_id).map(|(_, state)| state.response_tx)
+                            streams.remove(&stream_id).map(|state| state.response_tx)
                         };
                         if let Some(tx) = tx {
                             let _ = tx
@@ -312,7 +312,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                     if send_result.is_err() {
                         let tx = {
                             let mut streams = active_streams_clone.lock().await;
-                            streams.remove(&stream_id).map(|(_, state)| state.response_tx)
+                            streams.remove(&stream_id).map(|state| state.response_tx)
                         };
                         if let Some(tx) = tx {
                             let _ = tx
@@ -333,7 +333,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                     if send_result.is_err() {
                         let tx = {
                             let mut streams = active_streams_clone.lock().await;
-                            streams.remove(&stream_id).map(|(_, state)| state.response_tx)
+                            streams.remove(&stream_id).map(|state| state.response_tx)
                         };
                         if let Some(tx) = tx {
                             let _ = tx
@@ -360,7 +360,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                     if send_result.is_err() {
                         let tx = {
                             let mut streams = active_streams_clone.lock().await;
-                            streams.remove(&stream_id).map(|(_, state)| state.response_tx)
+                            streams.remove(&stream_id).map(|state| state.response_tx)
                         };
                         if let Some(tx) = tx {
                             let _ = tx
@@ -387,7 +387,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                     if send_result.is_err() {
                         let tx = {
                             let mut streams = active_streams_clone.lock().await;
-                            streams.remove(&stream_id).map(|(_, state)| state.response_tx)
+                            streams.remove(&stream_id).map(|state| state.response_tx)
                         };
                         if let Some(tx) = tx {
                             let _ = tx
@@ -480,7 +480,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                         let mut streams = active_streams_clone.lock().await;
                         match streams.get(&stream_id) {
                             Some(state) if state.is_websocket => None,
-                            Some(_) => streams.remove(&stream_id).map(|(_, state)| state.response_tx),
+                            Some(_) => streams.remove(&stream_id).map(|state| state.response_tx),
                             None => None,
                         }
                     };
@@ -504,7 +504,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                 ControlPacket::WebSocketClose { stream_id, code, reason } => {
                     let tx = {
                         let mut streams = active_streams_clone.lock().await;
-                        streams.remove(&stream_id).map(|(_, state)| state.response_tx)
+                        streams.remove(&stream_id).map(|state| state.response_tx)
                     };
                     if let Some(tx) = tx {
                         let _ = tx.send(StreamChunk::WebSocketClose { code, reason }).await;
@@ -514,7 +514,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                 ControlPacket::StreamError { stream_id, error } => {
                     let tx = {
                         let mut streams = active_streams_clone.lock().await;
-                        streams.remove(&stream_id).map(|(_, state)| state.response_tx)
+                        streams.remove(&stream_id).map(|state| state.response_tx)
                     };
                     if let Some(tx) = tx {
                         let _ = tx.send(StreamChunk::Error(error)).await;
@@ -544,8 +544,8 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
 
         // Close all active streams
         let mut streams = active_streams_clone.lock().await;
-        for (_, tx) in streams.drain() {
-            let _ = tx.send(StreamChunk::Error("Tunnel closed".to_string())).await;
+        for (_, state) in streams.drain() {
+            let _ = state.response_tx.send(StreamChunk::Error("Tunnel closed".to_string())).await;
         }
     });
 
