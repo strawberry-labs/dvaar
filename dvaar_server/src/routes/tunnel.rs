@@ -13,6 +13,7 @@ use axum::{
     routing::get,
     Router,
 };
+use chrono::{DateTime, Utc};
 use dvaar_common::{constants, ClientHello, ControlPacket, RouteInfo, ServerHello};
 use futures_util::{SinkExt, StreamExt};
 use rand::Rng;
@@ -174,7 +175,8 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     }
 
     // Generate or validate subdomain
-    let subdomain = match assign_subdomain(&state, &init_packet, &user.id.to_string()).await {
+    let can_request_subdomain = matches!(effective_plan, "hobby" | "pro");
+    let subdomain = match assign_subdomain(&state, &init_packet, &user.id.to_string(), can_request_subdomain).await {
         Ok(s) => s,
         Err(e) => {
             let error = ServerHello {
@@ -285,6 +287,8 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     // Task to receive responses from client
     let pending_clone = pending_responses.clone();
     let route_manager_clone = state.route_manager.clone();
+    let usage_is_paid = matches!(effective_plan, "hobby" | "pro");
+    let usage_plan_expires_at = user.plan_expires_at;
     let recv_task = tokio::spawn(async move {
         let mut bandwidth_buffer = 0u64;
         let user_id = user.id.to_string();
@@ -306,8 +310,9 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
             bandwidth_buffer += data.len() as u64;
             if bandwidth_buffer >= 1_000_000 {
                 // Flush to Redis every 1MB
+                let usage_ttl_secs = usage_ttl_secs(usage_is_paid, usage_plan_expires_at);
                 let _ = route_manager_clone
-                    .increment_usage(&user_id, bandwidth_buffer)
+                    .increment_usage(&user_id, bandwidth_buffer, usage_ttl_secs)
                     .await;
                 bandwidth_buffer = 0;
             }
@@ -340,8 +345,9 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
 
         // Flush remaining bandwidth
         if bandwidth_buffer > 0 {
+            let usage_ttl_secs = usage_ttl_secs(usage_is_paid, usage_plan_expires_at);
             let _ = route_manager_clone
-                .increment_usage(&user_id, bandwidth_buffer)
+                .increment_usage(&user_id, bandwidth_buffer, usage_ttl_secs)
                 .await;
         }
     });
@@ -379,8 +385,13 @@ async fn assign_subdomain(
     state: &AppState,
     init: &ClientHello,
     user_id: &str,
+    can_request_subdomain: bool,
 ) -> Result<String, String> {
     if let Some(requested) = &init.requested_subdomain {
+        if !can_request_subdomain {
+            return Err("Custom subdomains require a paid plan".to_string());
+        }
+
         // Check against blocklist first
         match abuse::check_subdomain(requested) {
             SubdomainCheck::Blocked(reason) => {
@@ -450,4 +461,19 @@ fn generate_random_subdomain() -> String {
     let num: u16 = rng.gen_range(100..999);
 
     format!("{}-{}-{}", adj, noun, num)
+}
+
+fn usage_ttl_secs(is_paid: bool, plan_expires_at: Option<DateTime<Utc>>) -> i64 {
+    const FREE_USAGE_TTL_SECS: i64 = 30 * 24 * 60 * 60;
+
+    if is_paid {
+        if let Some(expires_at) = plan_expires_at {
+            let ttl = (expires_at - Utc::now()).num_seconds();
+            if ttl > 0 {
+                return ttl;
+            }
+        }
+    }
+
+    FREE_USAGE_TTL_SECS
 }

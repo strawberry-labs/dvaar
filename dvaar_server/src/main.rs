@@ -16,7 +16,7 @@ mod services;
 
 use axum::{
     body::Body,
-    extract::{Request, State},
+    extract::{ConnectInfo, Request, State},
     http::StatusCode,
     response::IntoResponse,
     routing::get,
@@ -128,12 +128,12 @@ async fn main() -> anyhow::Result<()> {
     // Run both servers
     let public_server = async {
         let listener = tokio::net::TcpListener::bind(public_addr).await?;
-        axum::serve(listener, app).await
+        axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await
     };
 
     let internal_server = async {
         let listener = tokio::net::TcpListener::bind(internal_addr).await?;
-        axum::serve(listener, internal_app).await
+        axum::serve(listener, internal_app.into_make_service_with_connect_info::<SocketAddr>()).await
     };
 
     tokio::select! {
@@ -214,6 +214,7 @@ async fn health_check(State(state): State<routes::AppState>) -> impl IntoRespons
 async fn handle_fallback(
     State(state): State<routes::AppState>,
     Host(host): Host,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     request: Request<Body>,
 ) -> impl IntoResponse {
     let host_str = host.split(':').next().unwrap_or(&host);
@@ -228,5 +229,5 @@ async fn handle_fallback(
     }
 
     // Everything else (*.dvaar.app or custom domains) goes to ingress
-    routes::ingress::handle_ingress(State(state), Host(host), request).await
+    routes::ingress::handle_ingress(State(state), Host(host), ConnectInfo(addr), request).await
 }

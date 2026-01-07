@@ -4,12 +4,14 @@ use crate::db::queries;
 use crate::routes::{AppState, TunnelRequest, TunnelResponse};
 use axum::{
     body::Body,
+    extract::ConnectInfo,
     extract::State,
     http::{Request, Response, StatusCode},
     response::IntoResponse,
 };
 use axum_extra::extract::Host;
 use dvaar_common::{constants, HttpRequestPacket, new_stream_id};
+use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::sync::oneshot;
 
@@ -31,16 +33,18 @@ fn rate_limit_response(reset_in_secs: u64) -> Response<Body> {
 pub async fn handle_ingress(
     State(state): State<AppState>,
     Host(host): Host,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     request: Request<Body>,
 ) -> Response<Body> {
     // Extract subdomain from host header (tunnel domain: *.dvaar.app)
     let subdomain = match extract_subdomain(&host, &state.config.tunnel_domain) {
         Some(s) => s,
         None => {
-            // Check X-Subdomain header ONLY in development mode (localhost/127.0.0.1)
+            // Check X-Subdomain header ONLY for loopback connections
             // This prevents host spoofing attacks in production
-            let is_local_request = host.starts_with("localhost:") || host.starts_with("127.0.0.1:");
-            if is_local_request {
+            let is_local_request = addr.ip().is_loopback();
+            let allow_header_override = is_local_request && state.config.allow_subdomain_header;
+            if allow_header_override {
                 if let Some(header_subdomain) = request
                     .headers()
                     .get(constants::SUBDOMAIN_HEADER)

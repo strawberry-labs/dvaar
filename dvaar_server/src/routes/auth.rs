@@ -11,6 +11,7 @@ use axum::{
 };
 use chrono::Utc;
 use dvaar_common::constants;
+use http::Uri;
 use serde::Deserialize;
 use uuid::Uuid;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -59,9 +60,9 @@ async fn github_redirect(
     // Generate cryptographically secure nonce for CSRF protection
     let nonce = Uuid::new_v4().to_string();
 
-    // Validate redirect_uri if provided (must be localhost or our domain)
+    // Validate redirect_uri if provided (allow localhost and approved dvaar domains)
     let redirect_uri = query.redirect_uri.and_then(|uri| {
-        if uri.starts_with("http://localhost:") || uri.starts_with("http://127.0.0.1:") {
+        if is_allowed_redirect_uri(&state, &uri) {
             Some(uri)
         } else {
             tracing::warn!("Rejected invalid redirect_uri: {}", uri);
@@ -226,7 +227,7 @@ async fn cli_auth(
     }
 
     // Validate redirect_uri (must be localhost for CLI)
-    if !query.redirect_uri.starts_with("http://localhost:") && !query.redirect_uri.starts_with("http://127.0.0.1:") {
+    if !is_local_redirect_uri(&query.redirect_uri) {
         tracing::warn!("CLI auth rejected invalid redirect_uri: {}", query.redirect_uri);
         return (StatusCode::BAD_REQUEST, "Invalid redirect_uri - must be localhost").into_response();
     }
@@ -556,5 +557,64 @@ async fn get_nodes(
             tracing::error!("Failed to get nodes: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, "Failed to get nodes").into_response()
         }
+    }
+}
+
+fn is_allowed_redirect_uri(state: &AppState, uri: &str) -> bool {
+    if is_local_redirect_uri(uri) {
+        return true;
+    }
+
+    let parsed = match uri.parse::<Uri>() {
+        Ok(u) => u,
+        Err(_) => return false,
+    };
+
+    let scheme = parsed.scheme_str().unwrap_or("");
+    if scheme != "https" {
+        return false;
+    }
+
+    let host = match parsed.host() {
+        Some(h) => h,
+        None => return false,
+    };
+
+    let base_domain = state.config.base_domain.as_str();
+    if host == base_domain {
+        return true;
+    }
+
+    let allowed_subdomains = ["app", "dash", "www", "api"];
+    if allowed_subdomains
+        .iter()
+        .any(|sub| host == format!("{}.{}", sub, base_domain))
+    {
+        return true;
+    }
+
+    if let Ok(public_uri) = state.config.public_url.parse::<Uri>() {
+        if let Some(public_host) = public_uri.host() {
+            return host == public_host;
+        }
+    }
+
+    false
+}
+
+fn is_local_redirect_uri(uri: &str) -> bool {
+    let parsed = match uri.parse::<Uri>() {
+        Ok(u) => u,
+        Err(_) => return false,
+    };
+
+    let scheme = parsed.scheme_str().unwrap_or("");
+    if scheme != "http" {
+        return false;
+    }
+
+    match parsed.host() {
+        Some("localhost") | Some("127.0.0.1") => true,
+        _ => false,
     }
 }

@@ -1,6 +1,7 @@
 //! Server configuration loaded from environment variables
 
 use std::env;
+use std::net::IpAddr;
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -28,6 +29,9 @@ pub struct Config {
     /// Secret for node-to-node authentication
     pub cluster_secret: String,
 
+    /// Allow X-Subdomain header override (local development only)
+    pub allow_subdomain_header: bool,
+
     /// PostgreSQL connection string
     pub database_url: String,
 
@@ -50,6 +54,13 @@ pub struct Config {
 impl Config {
     /// Load configuration from environment variables
     pub fn from_env() -> Result<Self, ConfigError> {
+        let node_ip = env::var("NODE_IP").unwrap_or_else(|_| "127.0.0.1".to_string());
+        let cluster_secret = env::var("CLUSTER_SECRET").unwrap_or_else(|_| "dev-cluster-secret".to_string());
+
+        if !is_local_node(&node_ip) && cluster_secret == "dev-cluster-secret" {
+            return Err(ConfigError::InsecureClusterSecret);
+        }
+
         Ok(Self {
             host: env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string()),
             port: env::var("PORT")
@@ -64,24 +75,11 @@ impl Config {
             tunnel_domain: env::var("TUNNEL_DOMAIN").unwrap_or_else(|_| "dvaar.app".to_string()),
             public_url: env::var("PUBLIC_URL")
                 .unwrap_or_else(|_| "http://localhost:8080".to_string()),
-            node_ip: env::var("NODE_IP").unwrap_or_else(|_| "127.0.0.1".to_string()),
-            cluster_secret: {
-                let secret = env::var("CLUSTER_SECRET")
-                    .unwrap_or_else(|_| "dev-cluster-secret".to_string());
-
-                // Warn loudly if using default secret in non-localhost environment
-                let is_prod = env::var("NODE_IP")
-                    .map(|ip| ip != "127.0.0.1" && ip != "localhost")
-                    .unwrap_or(false);
-
-                if is_prod && secret == "dev-cluster-secret" {
-                    eprintln!("⚠️  SECURITY WARNING: Using default CLUSTER_SECRET in production!");
-                    eprintln!("⚠️  Set CLUSTER_SECRET environment variable to a secure random value.");
-                    // In a stricter mode, you could return an error here instead
-                }
-
-                secret
-            },
+            node_ip,
+            cluster_secret,
+            allow_subdomain_header: env::var("ALLOW_SUBDOMAIN_HEADER")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false),
             database_url: env::var("DATABASE_URL")
                 .map_err(|_| ConfigError::MissingEnv("DATABASE_URL"))?,
             redis_url: env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string()),
@@ -117,4 +115,17 @@ pub enum ConfigError {
 
     #[error("Invalid port number")]
     InvalidPort,
+
+    #[error("CLUSTER_SECRET must be set to a secure value in non-local environments")]
+    InsecureClusterSecret,
+}
+
+fn is_local_node(ip: &str) -> bool {
+    if ip == "localhost" {
+        return true;
+    }
+
+    ip.parse::<IpAddr>()
+        .map(|addr| addr.is_loopback())
+        .unwrap_or(false)
 }

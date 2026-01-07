@@ -129,17 +129,18 @@ impl RouteManager {
         Ok(result)
     }
 
-    /// Increment bandwidth usage for a user (with monthly TTL for auto-reset)
-    pub async fn increment_usage(&self, user_id: &str, bytes: u64) -> anyhow::Result<u64> {
+    /// Increment bandwidth usage for a user with a desired TTL (seconds)
+    pub async fn increment_usage(&self, user_id: &str, bytes: u64, ttl_secs: i64) -> anyhow::Result<u64> {
         let key = format!("{}{}", constants::USAGE_PREFIX, user_id);
         let result: i64 = self.client.incr_by(&key, bytes as i64).await?;
 
-        // Set TTL to end of current month (30 days from first usage as approximation)
-        // This ensures usage resets monthly even without explicit reset job
-        let ttl: i64 = self.client.ttl(&key).await?;
-        if ttl < 0 {
-            // No TTL set yet, set 30 day TTL
-            self.client.expire::<(), _>(&key, 30 * 24 * 60 * 60, None).await?;
+        if ttl_secs > 0 {
+            let ttl: i64 = self.client.ttl(&key).await.unwrap_or(-2);
+            let drift_allowance_secs: i64 = 60;
+
+            if ttl < 0 || ttl > ttl_secs + drift_allowance_secs || ttl_secs - ttl > drift_allowance_secs {
+                self.client.expire::<(), _>(&key, ttl_secs, None).await?;
+            }
         }
 
         Ok(result as u64)
