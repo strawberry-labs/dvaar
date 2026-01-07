@@ -124,11 +124,11 @@ Options:
 
 ## Pricing
 
-| Plan | Price | Subdomains | Tunnels | Bandwidth |
-|------|-------|------------|---------|-----------|
-| **Free** | $0/mo | Random only | 3 | 1 GB/mo |
-| **Hobby** | $5/mo | Custom + CNAME | 5 | 100 GB/mo |
-| **Pro** | $15/mo | Reserved + CNAME | 20 | 1 TB/mo |
+| Plan | Price | Concurrent Tunnels | Tunnels/Hour | Bandwidth |
+|------|-------|--------------------|--------------|-----------|
+| **Free** | $0/mo | 5 | 60 | 1 GB/mo |
+| **Hobby** | $5/mo | 10 | 200 | 50 GB/mo |
+| **Pro** | $15/mo | 50 | 1000 | 500 GB/mo |
 
 **Subdomain Types:**
 - **Random** (Free): `quick-fox-847.dvaar.app` — changes each session

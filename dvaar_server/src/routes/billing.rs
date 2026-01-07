@@ -217,7 +217,8 @@ async fn list_plans() -> Response {
                 "name": "Free",
                 "price": 0,
                 "features": {
-                    "tunnels_per_hour": 5,
+                    "concurrent_tunnels": 5,
+                    "tunnels_per_hour": 60,
                     "requests_per_min": 300,
                     "bandwidth_gb": 1,
                     "custom_domains": false,
@@ -229,7 +230,8 @@ async fn list_plans() -> Response {
                 "name": "Hobby",
                 "price": 5,
                 "features": {
-                    "tunnels_per_hour": 20,
+                    "concurrent_tunnels": 10,
+                    "tunnels_per_hour": 200,
                     "requests_per_min": 1000,
                     "bandwidth_gb": 50,
                     "custom_domains": true,
@@ -241,7 +243,8 @@ async fn list_plans() -> Response {
                 "name": "Pro",
                 "price": 15,
                 "features": {
-                    "tunnels_per_hour": 100,
+                    "concurrent_tunnels": 50,
+                    "tunnels_per_hour": 1000,
                     "requests_per_min": 5000,
                     "bandwidth_gb": 500,
                     "custom_domains": true,

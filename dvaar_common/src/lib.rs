@@ -262,6 +262,14 @@ pub mod constants {
     pub const BANDWIDTH_FREE: u64 = 1 * 1024 * 1024 * 1024; // 1 GB
     pub const BANDWIDTH_HOBBY: u64 = 50 * 1024 * 1024 * 1024; // 50 GB
     pub const BANDWIDTH_PRO: u64 = 500 * 1024 * 1024 * 1024; // 500 GB
+
+    /// Concurrent tunnel limits
+    pub const CONCURRENT_TUNNELS_FREE: u32 = 5;
+    pub const CONCURRENT_TUNNELS_HOBBY: u32 = 10;
+    pub const CONCURRENT_TUNNELS_PRO: u32 = 50;
+
+    /// Redis key prefix for user tunnel count
+    pub const USER_TUNNELS_PREFIX: &str = "user_tunnels:";
 }
 
 #[cfg(test)]

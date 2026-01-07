@@ -146,6 +146,9 @@ impl TunnelClient {
         );
         note("Tunnel Active", &tunnel_info)?;
 
+        // Display QR code
+        print_qr_code(&public_url);
+
         println!();
         println!(
             "{}  {}",
@@ -848,5 +851,30 @@ impl TunnelClient {
             "  {} {} {} {} {} {}",
             timestamp, method_styled, style(uri_display).white(), status_styled, duration_styled, size_styled,
         );
+    }
+}
+
+/// Print a QR code for the given URL
+fn print_qr_code(url: &str) {
+    use qrcode::QrCode;
+
+    let code = match QrCode::new(url) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::debug!("Failed to generate QR code: {}", e);
+            return;
+        }
+    };
+
+    let string = code
+        .render::<char>()
+        .quiet_zone(false)
+        .module_dimensions(2, 1)
+        .build();
+
+    println!();
+    println!("{}", style("  Scan to open:").dim());
+    for line in string.lines() {
+        println!("  {}", line);
     }
 }

@@ -29,13 +29,13 @@ impl RateLimitConfig {
 pub mod limits {
     use super::*;
 
-    /// Tunnel creation: 5 per hour for free, 20 per hour for paid
+    /// Tunnel creation: 60 per hour for free, 200 per hour for paid
     pub fn tunnel_creation_free() -> RateLimitConfig {
-        RateLimitConfig::new(5, 3600)
+        RateLimitConfig::new(60, 3600)
     }
 
     pub fn tunnel_creation_paid() -> RateLimitConfig {
-        RateLimitConfig::new(20, 3600)
+        RateLimitConfig::new(200, 3600)
     }
 
     /// Request rate: 10000/min for free, 100000/min for paid

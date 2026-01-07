@@ -50,6 +50,9 @@ http = { workspace = true }
 cliclack = "0.3"
 console = "0.15"
 
+# QR code generation
+qrcode = "0.14"
+
 # Process management (platform-specific)
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", features = ["signal", "process"] }

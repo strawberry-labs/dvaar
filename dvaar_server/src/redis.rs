@@ -260,6 +260,48 @@ impl RouteManager {
         self.client.srem::<(), _, _>("nodes:active", node_id).await?;
         Ok(())
     }
+
+    /// Atomically check and increment concurrent tunnel count for a user.
+    /// Returns (new_count, was_allowed) - if was_allowed is false, the increment was rolled back.
+    /// This is atomic: INCR first, then check limit, DECR if over.
+    pub async fn try_increment_user_tunnels(&self, user_id: &str, limit: u32) -> anyhow::Result<(u32, bool)> {
+        let key = format!("{}{}", constants::USER_TUNNELS_PREFIX, user_id);
+
+        // Atomically increment
+        let new_count: i64 = self.client.incr(&key).await?;
+
+        // Check if we exceeded the limit (count was already at or above limit before increment)
+        if new_count > limit as i64 {
+            // Roll back the increment
+            let _: i64 = self.client.decr(&key).await?;
+            return Ok((new_count.saturating_sub(1) as u32, false));
+        }
+
+        // Set long TTL - will be refreshed by heartbeat
+        // Using 24 hours as fallback in case heartbeat fails
+        self.client.expire::<(), _>(&key, 24 * 60 * 60, None).await?;
+
+        Ok((new_count as u32, true))
+    }
+
+    /// Decrement concurrent tunnel count for a user
+    pub async fn decrement_user_tunnels(&self, user_id: &str) -> anyhow::Result<()> {
+        let key = format!("{}{}", constants::USER_TUNNELS_PREFIX, user_id);
+        let result: i64 = self.client.decr(&key).await?;
+        // Clean up if count drops to zero or below
+        if result <= 0 {
+            let _ = self.client.del::<(), _>(&key).await;
+        }
+        Ok(())
+    }
+
+    /// Refresh TTL on user tunnel count (called during heartbeat)
+    pub async fn refresh_user_tunnels_ttl(&self, user_id: &str) -> anyhow::Result<()> {
+        let key = format!("{}{}", constants::USER_TUNNELS_PREFIX, user_id);
+        // Refresh to 24 hours - heartbeat runs every 30s so this keeps it alive
+        self.client.expire::<(), _>(&key, 24 * 60 * 60, None).await?;
+        Ok(())
+    }
 }
 
 /// Node information for cluster discovery
@@ -273,10 +315,11 @@ pub struct NodeInfo {
     pub max_tunnels: u32,
 }
 
-/// Start a heartbeat task that refreshes a route periodically
+/// Start a heartbeat task that refreshes a route and user tunnel count periodically
 pub fn spawn_heartbeat(
     route_manager: RouteManager,
     subdomain: String,
+    user_id: String,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -285,10 +328,16 @@ pub fn spawn_heartbeat(
         loop {
             tokio::select! {
                 _ = tokio::time::sleep(interval) => {
+                    // Refresh route TTL
                     if let Err(e) = route_manager.refresh_route(&subdomain).await {
                         tracing::error!("Failed to refresh route for {}: {}", subdomain, e);
                     } else {
                         tracing::debug!("Refreshed route for {}", subdomain);
+                    }
+
+                    // Refresh user tunnel count TTL
+                    if let Err(e) = route_manager.refresh_user_tunnels_ttl(&user_id).await {
+                        tracing::error!("Failed to refresh user tunnel TTL for {}: {}", user_id, e);
                     }
                 }
                 _ = shutdown_rx.changed() => {

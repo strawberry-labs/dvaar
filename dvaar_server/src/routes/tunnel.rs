@@ -179,6 +179,13 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         Ok(_) => {}
     }
 
+    // Determine concurrent tunnel limit for this plan
+    let concurrent_limit = match effective_plan {
+        "pro" => constants::CONCURRENT_TUNNELS_PRO,
+        "hobby" => constants::CONCURRENT_TUNNELS_HOBBY,
+        _ => constants::CONCURRENT_TUNNELS_FREE,
+    };
+
     // Generate or validate subdomain
     let can_request_subdomain = matches!(effective_plan, "hobby" | "pro");
     let subdomain = match assign_subdomain(&state, &init_packet, &user.id.to_string(), can_request_subdomain).await {
@@ -215,6 +222,46 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         return;
     }
 
+    // Atomically check and increment concurrent tunnel count
+    // This uses INCR first, then checks limit, and DECRs if over - preventing race conditions
+    let user_id_for_cleanup = user.id.to_string();
+    match state.route_manager.try_increment_user_tunnels(&user_id_for_cleanup, concurrent_limit).await {
+        Ok((current_tunnels, false)) => {
+            // Over limit - increment was rolled back
+            tracing::warn!(
+                "Concurrent tunnel limit exceeded for user {}: {}/{} tunnels",
+                user.email,
+                current_tunnels,
+                concurrent_limit
+            );
+            // Clean up the route we just registered
+            let _ = state.route_manager.remove_route(&subdomain).await;
+
+            let upgrade_msg = match effective_plan {
+                "free" => "Upgrade to Hobby ($5/mo) for 10 concurrent tunnels: dvaar upgrade",
+                "hobby" => "Upgrade to Pro ($15/mo) for 50 concurrent tunnels: dvaar upgrade",
+                _ => "You've reached the maximum concurrent tunnels for your plan",
+            };
+            let error = ServerHello {
+                assigned_domain: String::new(),
+                error: Some(format!(
+                    "Maximum {} concurrent tunnels reached. {}",
+                    concurrent_limit, upgrade_msg
+                )),
+                server_version: constants::PROTOCOL_VERSION.to_string(),
+            };
+            let _ = send_packet(&mut sender, ControlPacket::InitAck(error)).await;
+            return;
+        }
+        Err(e) => {
+            tracing::error!("Concurrent tunnel check failed: {}", e);
+            // On Redis error, allow the tunnel (fail open) but log it
+        }
+        Ok((_, true)) => {
+            // Successfully incremented, we're under the limit
+        }
+    }
+
     // Send success response
     let ack = ServerHello {
         assigned_domain: full_domain.clone(),
@@ -223,7 +270,9 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     };
 
     if send_packet(&mut sender, ControlPacket::InitAck(ack)).await.is_err() {
+        // InitAck failed - clean up route AND decrement tunnel count
         let _ = state.route_manager.remove_route(&subdomain).await;
+        let _ = state.route_manager.decrement_user_tunnels(&user_id_for_cleanup).await;
         return;
     }
 
@@ -247,10 +296,11 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         },
     );
 
-    // Start heartbeat task
+    // Start heartbeat task (also refreshes user tunnel count TTL)
     let heartbeat_handle = spawn_heartbeat(
         RouteManager::new(state.redis.clone()),
         subdomain.clone(),
+        user_id_for_cleanup.clone(),
         shutdown_rx,
     );
 
@@ -560,6 +610,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     heartbeat_handle.abort();
     state.tunnels.remove(&subdomain);
     let _ = state.route_manager.remove_route(&subdomain).await;
+    let _ = state.route_manager.decrement_user_tunnels(&user_id_for_cleanup).await;
 
     tracing::info!("Tunnel closed: {}", full_domain);
 }
