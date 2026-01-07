@@ -1,78 +1,15 @@
 //! Update checker - notifies users of new versions
 
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
-use std::fs;
-use std::path::PathBuf;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use serde::Deserialize;
+use std::time::Duration;
 
 const GITHUB_REPO: &str = "strawberry-labs/dvaar";
-const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60); // 24 hours
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
-
-#[derive(Debug, Serialize, Deserialize)]
-struct UpdateCache {
-    last_check: u64,
-    latest_version: Option<String>,
-}
 
 #[derive(Debug, Deserialize)]
 struct GithubRelease {
     tag_name: String,
-}
-
-/// Get the cache file path
-fn cache_path() -> PathBuf {
-    crate::config::config_dir().join("update_cache.json")
-}
-
-/// Check if we should perform an update check
-fn should_check() -> bool {
-    let path = cache_path();
-    if !path.exists() {
-        return true;
-    }
-
-    match fs::read_to_string(&path) {
-        Ok(content) => {
-            if let Ok(cache) = serde_json::from_str::<UpdateCache>(&content) {
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-                return now - cache.last_check > CHECK_INTERVAL.as_secs();
-            }
-        }
-        Err(_) => {}
-    }
-
-    true
-}
-
-/// Save the cache
-fn save_cache(latest_version: Option<String>) {
-    let cache = UpdateCache {
-        last_check: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs(),
-        latest_version,
-    };
-
-    if let Ok(content) = serde_json::to_string(&cache) {
-        let _ = fs::write(cache_path(), content);
-    }
-}
-
-/// Get cached latest version
-fn get_cached_version() -> Option<String> {
-    let path = cache_path();
-    if let Ok(content) = fs::read_to_string(&path) {
-        if let Ok(cache) = serde_json::from_str::<UpdateCache>(&content) {
-            return cache.latest_version;
-        }
-    }
-    None
 }
 
 /// Fetch latest version from GitHub (async)
@@ -119,36 +56,23 @@ fn is_newer_version(latest: &str, current: &str) -> bool {
 }
 
 /// Check for updates and print message if available
-/// This is non-blocking and won't fail the main command
+/// Always checks GitHub releases API (fast, 5s timeout)
 pub async fn check_for_updates() {
     // Skip in CI or tests
     if std::env::var("CI").is_ok() || std::env::var("DVAAR_NO_UPDATE_CHECK").is_ok() {
         return;
     }
 
-    // Check from cache first
-    if let Some(cached_version) = get_cached_version() {
-        if is_newer_version(&cached_version, CURRENT_VERSION) {
-            print_update_message(&cached_version);
+    if let Ok(latest) = fetch_latest_version().await {
+        if is_newer_version(&latest, CURRENT_VERSION) {
+            print_update_message(&latest);
         }
-    }
-
-    // Do a background check if needed
-    if should_check() {
-        tokio::spawn(async {
-            if let Ok(latest) = fetch_latest_version().await {
-                save_cache(Some(latest));
-            } else {
-                save_cache(None);
-            }
-        });
     }
 }
 
-/// Check for updates (blocking, for explicit update check command)
+/// Check for updates (for explicit update check command)
 pub async fn check_for_updates_blocking() -> Result<Option<String>> {
     let latest = fetch_latest_version().await?;
-    save_cache(Some(latest.clone()));
 
     if is_newer_version(&latest, CURRENT_VERSION) {
         Ok(Some(latest))
