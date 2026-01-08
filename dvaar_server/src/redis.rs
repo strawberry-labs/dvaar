@@ -180,6 +180,26 @@ impl RouteManager {
         Ok(value)
     }
 
+    /// Store ads configuration (for CLI to fetch)
+    pub async fn store_ads(&self, key: &str, json_value: &str) -> anyhow::Result<()> {
+        self.client
+            .set::<(), _, _>(
+                key,
+                json_value,
+                None, // No expiration for ads
+                None,
+                false,
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Get ads configuration
+    pub async fn get_ads(&self, key: &str) -> anyhow::Result<Option<String>> {
+        let value: Option<String> = self.client.get(key).await?;
+        Ok(value)
+    }
+
     /// Register this node in the cluster (uses individual keys with TTL per node)
     pub async fn register_node(&self, node_id: &str, node_info: &NodeInfo) -> anyhow::Result<()> {
         let key = format!("{}:{}", constants::NODE_PREFIX, node_id);

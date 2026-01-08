@@ -34,6 +34,19 @@ pub const INSPECTOR_HTML: &str = r#"<!DOCTYPE html>
             font-size: 0.75rem;
             padding: 0.25rem 0.5rem;
             border-radius: 4px;
+        }
+        .tunnel-selector {
+            background: #1a1a1a;
+            color: #e0e0e0;
+            border: 1px solid #333;
+            padding: 0.375rem 0.75rem;
+            border-radius: 4px;
+            font-size: 0.875rem;
+            cursor: pointer;
+            min-width: 180px;
+        }
+        .tunnel-selector:hover { background: #252525; }
+        .tunnel-selector option { background: #1a1a1a;
             font-weight: 600;
         }
         .controls { display: flex; gap: 0.5rem; align-items: center; }
@@ -377,6 +390,9 @@ pub const INSPECTOR_HTML: &str = r#"<!DOCTYPE html>
             <div class="header-left">
                 <h1>dvaar</h1>
                 <span class="online-badge" id="online-badge">online</span>
+                <select id="tunnel-selector" class="tunnel-selector" onchange="selectTunnel(this.value)">
+                    <option value="">All Tunnels</option>
+                </select>
             </div>
             <div class="controls">
                 <div class="status">
@@ -504,10 +520,43 @@ pub const INSPECTOR_HTML: &str = r#"<!DOCTYPE html>
 
     <script>
         let requests = [];
+        let tunnels = {};
+        let selectedTunnelId = null;
         let ws = null;
         let expandedId = null;
         let currentTab = 'inspect';
         let metricsInterval = null;
+
+        function selectTunnel(tunnelId) {
+            selectedTunnelId = tunnelId || null;
+            renderRequests();
+            // Refresh status/metrics for selected tunnel
+            if (currentTab === 'status') {
+                fetchTunnelInfo();
+                fetchMetrics();
+            }
+        }
+
+        function updateTunnelSelector() {
+            const selector = document.getElementById('tunnel-selector');
+            const currentValue = selector.value;
+            selector.innerHTML = '<option value="">All Tunnels</option>';
+            Object.values(tunnels).forEach(tunnel => {
+                const option = document.createElement('option');
+                option.value = tunnel.tunnel_id;
+                const status = tunnel.status === 'active' ? '●' : '○';
+                const name = tunnel.subdomain || tunnel.tunnel_id.slice(0, 8);
+                option.textContent = `${status} ${name}`;
+                option.style.color = tunnel.status === 'active' ? '#4ade80' : '#888';
+                selector.appendChild(option);
+            });
+            selector.value = currentValue;
+        }
+
+        function getFilteredRequests() {
+            if (!selectedTunnelId) return requests;
+            return requests.filter(r => r.tunnel_id === selectedTunnelId);
+        }
 
         function switchTab(tab) {
             currentTab = tab;
@@ -531,6 +580,20 @@ pub const INSPECTOR_HTML: &str = r#"<!DOCTYPE html>
 
         async function fetchTunnelInfo() {
             try {
+                // If a specific tunnel is selected, use its info from the tunnels cache
+                if (selectedTunnelId && tunnels[selectedTunnelId]) {
+                    const tunnel = tunnels[selectedTunnelId];
+                    const tunnelUrlEl = document.getElementById('tunnel-url');
+                    if (tunnel.public_url) {
+                        tunnelUrlEl.innerHTML = `<a href="${tunnel.public_url}" target="_blank">${tunnel.public_url}</a>`;
+                    } else {
+                        tunnelUrlEl.textContent = '-';
+                    }
+                    document.getElementById('local-addr').textContent = tunnel.local_addr || '-';
+                    return;
+                }
+
+                // Otherwise fetch the default/aggregate info
                 const res = await fetch('/api/info');
                 const info = await res.json();
 
@@ -549,7 +612,29 @@ pub const INSPECTOR_HTML: &str = r#"<!DOCTYPE html>
 
         async function fetchMetrics() {
             try {
-                const res = await fetch('/api/metrics');
+                // Fetch per-tunnel metrics if a tunnel is selected, otherwise aggregate
+                const url = selectedTunnelId
+                    ? `/api/tunnels/${selectedTunnelId}/metrics`
+                    : '/api/metrics';
+                const res = await fetch(url);
+
+                if (!res.ok) {
+                    // Handle 404 for tunnels that don't exist
+                    if (res.status === 404) {
+                        document.getElementById('total-requests').textContent = '0';
+                        document.getElementById('open-connections').textContent = '0';
+                        document.getElementById('rate-1m').textContent = '0.00';
+                        document.getElementById('rate-5m').textContent = '0.00';
+                        document.getElementById('rate-15m').textContent = '0.00';
+                        document.getElementById('p50').textContent = '0ms';
+                        document.getElementById('p90').textContent = '0ms';
+                        document.getElementById('p95').textContent = '0ms';
+                        document.getElementById('p99').textContent = '0ms';
+                        return;
+                    }
+                    throw new Error(`HTTP ${res.status}`);
+                }
+
                 const metrics = await res.json();
 
                 document.getElementById('total-requests').textContent = metrics.total_requests;
@@ -598,18 +683,55 @@ pub const INSPECTOR_HTML: &str = r#"<!DOCTYPE html>
                     requests = msg.data;
                     requestAnimationFrame(() => renderRequests());
                 } else if (msg.type === 'request') {
-                    requests.push(msg.data);
-                    if (requests.length > 50) requests.shift();
-                    requestAnimationFrame(() => {
-                        renderRequests();
-                        if (document.getElementById('auto-scroll').checked) {
-                            const container = document.getElementById('requests-container');
-                            container.scrollTop = container.scrollHeight;
-                        }
-                    });
+                    // Only show if no tunnel selected or request matches selected tunnel
+                    if (!selectedTunnelId || msg.data.tunnel_id === selectedTunnelId) {
+                        requests.push(msg.data);
+                        if (requests.length > 100) requests.shift();
+                        requestAnimationFrame(() => {
+                            renderRequests();
+                            if (document.getElementById('auto-scroll').checked) {
+                                const container = document.getElementById('requests-container');
+                                container.scrollTop = container.scrollHeight;
+                            }
+                        });
+                    } else {
+                        // Still store it, just don't render immediately
+                        requests.push(msg.data);
+                        if (requests.length > 100) requests.shift();
+                    }
                 } else if (msg.type === 'clear') {
-                    requests = [];
+                    if (!msg.data || !msg.data.tunnel_id) {
+                        requests = [];
+                    } else {
+                        requests = requests.filter(r => r.tunnel_id !== msg.data.tunnel_id);
+                    }
                     requestAnimationFrame(() => renderRequests());
+                } else if (msg.type === 'tunnels') {
+                    // Initial tunnels list
+                    tunnels = {};
+                    msg.data.forEach(t => tunnels[t.tunnel_id] = t);
+                    updateTunnelSelector();
+                } else if (msg.type === 'tunnel_registered') {
+                    tunnels[msg.data.tunnel_id] = msg.data;
+                    updateTunnelSelector();
+                } else if (msg.type === 'tunnel_unregistered') {
+                    if (tunnels[msg.data.tunnel_id]) {
+                        tunnels[msg.data.tunnel_id].status = 'disconnected';
+                    }
+                    updateTunnelSelector();
+                } else if (msg.type === 'tunnel_status') {
+                    if (tunnels[msg.data.tunnel_id]) {
+                        tunnels[msg.data.tunnel_id].status = msg.data.status;
+                    }
+                    updateTunnelSelector();
+                } else if (msg.type === 'tunnel_updated') {
+                    // Update tunnel info (e.g., when public_url becomes available)
+                    tunnels[msg.data.tunnel_id] = msg.data;
+                    updateTunnelSelector();
+                    // Refresh status page if this tunnel is selected
+                    if (currentTab === 'status' && selectedTunnelId === msg.data.tunnel_id) {
+                        fetchTunnelInfo();
+                    }
                 }
             };
         }
@@ -727,10 +849,13 @@ pub const INSPECTOR_HTML: &str = r#"<!DOCTYPE html>
             const container = document.getElementById('requests-container');
             const emptyState = document.getElementById('empty-state');
             const countEl = document.getElementById('request-count');
+            const filtered = getFilteredRequests();
 
-            countEl.textContent = `${requests.length} request${requests.length !== 1 ? 's' : ''}`;
+            const tunnelCount = Object.keys(tunnels).length;
+            const tunnelLabel = selectedTunnelId ? ' (filtered)' : (tunnelCount > 1 ? ` (${tunnelCount} tunnels)` : '');
+            countEl.textContent = `${filtered.length} request${filtered.length !== 1 ? 's' : ''}${tunnelLabel}`;
 
-            if (requests.length === 0) {
+            if (filtered.length === 0) {
                 container.innerHTML = '';
                 container.appendChild(emptyState);
                 emptyState.style.display = 'block';
@@ -739,7 +864,7 @@ pub const INSPECTOR_HTML: &str = r#"<!DOCTYPE html>
 
             emptyState.style.display = 'none';
 
-            container.innerHTML = requests.map(req => `
+            container.innerHTML = filtered.map(req => `
                 <div class="request-row ${expandedId === req.id ? 'expanded' : ''}" id="row-${req.id}" onclick="toggleDetails('${req.id}')">
                     <div><span class="method ${req.method}">${req.method}</span></div>
                     <div class="path" title="${req.path}">${req.path}</div>

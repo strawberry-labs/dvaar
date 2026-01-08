@@ -1,7 +1,7 @@
 //! Inspector HTTP server with WebSocket support
 
 use super::html::INSPECTOR_HTML;
-use super::store::RequestStore;
+use super::store::{CapturedRequest, RegisteredTunnel, RequestStore, TunnelStatus};
 use anyhow::{Context, Result};
 use axum::{
     extract::{
@@ -13,8 +13,9 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 
@@ -28,8 +29,6 @@ struct AppState {
 
 /// Start the inspector server on the given port
 pub async fn start_server(port: u16, store: Arc<RequestStore>) -> Result<JoinHandle<()>> {
-    // We don't know the upstream yet, but we'll set a placeholder
-    // The replay function will get this from TunnelClient context
     start_server_with_upstream(port, store, String::new(), false).await
 }
 
@@ -41,19 +40,32 @@ pub async fn start_server_with_upstream(
     upstream_tls: bool,
 ) -> Result<JoinHandle<()>> {
     let state = AppState {
-        store,
+        store: store.clone(),
         upstream_addr: Arc::new(upstream_addr),
         upstream_tls,
     };
 
     let app = Router::new()
+        // Dashboard
         .route("/", get(serve_dashboard))
+        // Health check (for port detection)
+        .route("/api/health", get(health_check))
+        // Legacy endpoints
         .route("/api/requests", get(get_requests))
         .route("/api/requests/{id}", get(get_request))
         .route("/api/replay/{id}", post(replay_request))
         .route("/api/clear", post(clear_requests))
         .route("/api/metrics", get(get_metrics))
         .route("/api/info", get(get_info))
+        // Multi-tunnel endpoints
+        .route("/api/tunnels", get(get_tunnels))
+        .route("/api/tunnels/register", post(register_tunnel))
+        .route("/api/tunnels/{tunnel_id}/unregister", post(unregister_tunnel))
+        .route("/api/tunnels/{tunnel_id}/heartbeat", post(heartbeat))
+        .route("/api/tunnels/{tunnel_id}/request", post(submit_request))
+        .route("/api/tunnels/{tunnel_id}/requests", get(get_tunnel_requests))
+        .route("/api/tunnels/{tunnel_id}/metrics", get(get_tunnel_metrics))
+        // WebSocket
         .route("/ws", get(ws_handler))
         .with_state(state);
 
@@ -62,6 +74,16 @@ pub async fn start_server_with_upstream(
         .await
         .context(format!("Failed to bind inspector to {}", addr))?;
 
+    // Start cleanup task for stale tunnels
+    let cleanup_store = store.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            cleanup_store.cleanup_stale_tunnels(120).await; // 2 minute threshold
+        }
+    });
+
     let handle = tokio::spawn(async move {
         axum::serve(listener, app).await.ok();
     });
@@ -69,13 +91,134 @@ pub async fn start_server_with_upstream(
     Ok(handle)
 }
 
+// ============================================================================
+// Health Check
+// ============================================================================
+
+/// Health check response
+#[derive(Serialize)]
+struct HealthResponse {
+    service: String,
+    version: String,
+    tunnels: usize,
+}
+
+/// Health check endpoint for port detection
+async fn health_check(State(state): State<AppState>) -> Json<HealthResponse> {
+    let tunnels = state.store.get_tunnels().await;
+    Json(HealthResponse {
+        service: "dvaar-inspector".to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        tunnels: tunnels.len(),
+    })
+}
+
+// ============================================================================
+// Multi-Tunnel Endpoints
+// ============================================================================
+
+/// Request to register a tunnel
+#[derive(Debug, Deserialize)]
+struct RegisterTunnelRequest {
+    tunnel_id: String,
+    subdomain: String,
+    public_url: String,
+    local_addr: String,
+}
+
+/// Response from tunnel registration
+#[derive(Debug, Serialize)]
+struct RegisterTunnelResponse {
+    success: bool,
+    tunnel_id: String,
+}
+
+/// Register a new tunnel
+async fn register_tunnel(
+    State(state): State<AppState>,
+    Json(req): Json<RegisterTunnelRequest>,
+) -> Json<RegisterTunnelResponse> {
+    let tunnel = RegisteredTunnel {
+        tunnel_id: req.tunnel_id.clone(),
+        subdomain: req.subdomain,
+        public_url: req.public_url,
+        local_addr: req.local_addr,
+        status: TunnelStatus::Active,
+        registered_at: Utc::now(),
+        last_seen: Utc::now(),
+    };
+
+    state.store.register_tunnel(tunnel).await;
+
+    Json(RegisterTunnelResponse {
+        success: true,
+        tunnel_id: req.tunnel_id,
+    })
+}
+
+/// Unregister a tunnel
+async fn unregister_tunnel(
+    State(state): State<AppState>,
+    Path(tunnel_id): Path<String>,
+) -> StatusCode {
+    state.store.unregister_tunnel(&tunnel_id).await;
+    StatusCode::OK
+}
+
+/// Heartbeat from a tunnel
+async fn heartbeat(
+    State(state): State<AppState>,
+    Path(tunnel_id): Path<String>,
+) -> StatusCode {
+    state.store.heartbeat(&tunnel_id).await;
+    StatusCode::OK
+}
+
+/// Submit a request from a remote tunnel
+async fn submit_request(
+    State(state): State<AppState>,
+    Path(tunnel_id): Path<String>,
+    Json(request): Json<CapturedRequest>,
+) -> StatusCode {
+    state.store.add_request_for_tunnel(&tunnel_id, request).await;
+    StatusCode::OK
+}
+
+/// Get all tunnels
+async fn get_tunnels(State(state): State<AppState>) -> Json<Vec<RegisteredTunnel>> {
+    Json(state.store.get_tunnels().await)
+}
+
+/// Get requests for a specific tunnel
+async fn get_tunnel_requests(
+    State(state): State<AppState>,
+    Path(tunnel_id): Path<String>,
+) -> Json<Vec<CapturedRequest>> {
+    Json(state.store.get_requests_for_tunnel(Some(&tunnel_id)).await)
+}
+
+/// Get metrics for a specific tunnel
+async fn get_tunnel_metrics(
+    State(state): State<AppState>,
+    Path(tunnel_id): Path<String>,
+) -> Response {
+    match state.store.get_tunnel_metrics(&tunnel_id).await {
+        Some(metrics) => Json(metrics).into_response(),
+        None => (StatusCode::NOT_FOUND, "Tunnel not found").into_response(),
+    }
+}
+
+// ============================================================================
+// Legacy Endpoints
+// ============================================================================
+
 /// Serve the HTML dashboard
 async fn serve_dashboard() -> Html<&'static str> {
     Html(INSPECTOR_HTML)
 }
 
 /// Get all captured requests
-async fn get_requests(State(state): State<AppState>) -> Json<Vec<super::store::CapturedRequest>> {
+async fn get_requests(State(state): State<AppState>) -> Json<Vec<CapturedRequest>> {
     Json(state.store.get_requests().await)
 }
 
@@ -186,6 +329,10 @@ async fn clear_requests(State(state): State<AppState>) -> StatusCode {
     StatusCode::OK
 }
 
+// ============================================================================
+// WebSocket
+// ============================================================================
+
 /// WebSocket handler for live updates
 async fn ws_handler(
     State(state): State<AppState>,
@@ -205,6 +352,16 @@ async fn handle_websocket(socket: WebSocket, state: AppState) {
         "data": requests
     });
     if let Ok(json) = serde_json::to_string(&initial_msg) {
+        let _ = sender.send(Message::Text(json.into())).await;
+    }
+
+    // Send initial tunnels list
+    let tunnels = state.store.get_tunnels().await;
+    let tunnels_msg = serde_json::json!({
+        "type": "tunnels",
+        "data": tunnels
+    });
+    if let Ok(json) = serde_json::to_string(&tunnels_msg) {
         let _ = sender.send(Message::Text(json.into())).await;
     }
 

@@ -1,6 +1,6 @@
 //! WebSocket tunnel client with streaming and WebSocket passthrough support
 
-use crate::inspector::{CapturedRequest, RequestStore};
+use crate::inspector::{CapturedRequest, InspectorClient, RequestStore};
 use crate::tui::{TuiApp, TuiEvent, TunnelInfo, TunnelStatus};
 use anyhow::{Context, Result};
 use bytes::Bytes;
@@ -41,6 +41,8 @@ pub struct TunnelClient {
     host_header: Option<String>,
     upstream_tls: bool,
     inspector: Option<Arc<RequestStore>>,
+    inspector_client: Option<Arc<InspectorClient>>,
+    tunnel_id: Option<String>,
 }
 
 /// Active WebSocket connection to local server
@@ -76,6 +78,8 @@ impl TunnelClient {
             host_header: None,
             upstream_tls: false,
             inspector: None,
+            inspector_client: None,
+            tunnel_id: None,
         }
     }
 
@@ -93,6 +97,14 @@ impl TunnelClient {
 
     pub fn set_inspector(&mut self, store: Arc<RequestStore>) {
         self.inspector = Some(store);
+    }
+
+    pub fn set_inspector_client(&mut self, client: InspectorClient) {
+        self.inspector_client = Some(Arc::new(client));
+    }
+
+    pub fn set_tunnel_id(&mut self, id: String) {
+        self.tunnel_id = Some(id);
     }
 
     /// Run the tunnel client
@@ -164,10 +176,49 @@ impl TunnelClient {
         let public_url = format!("https://{}", server_hello.assigned_domain);
         let upstream_url = self.format_upstream();
 
-        // Set tunnel info in inspector store for status page
-        if let Some(ref store) = self.inspector {
-            store.set_tunnel_info(public_url.clone(), upstream_url.clone()).await;
-        }
+        // Update tunnel info in inspector store (server mode)
+        // This updates both the legacy tunnel_info and the registered tunnel's public_url
+        let server_heartbeat_task = if let Some(ref store) = self.inspector {
+            if let Some(ref tunnel_id) = self.tunnel_id {
+                // Update the registered tunnel's public_url
+                store.update_tunnel_url(tunnel_id, public_url.clone()).await;
+                // Also update local_addr in legacy info
+                store.set_tunnel_info(public_url.clone(), upstream_url.clone()).await;
+
+                // Start heartbeat task for server-mode tunnel
+                let store_clone = Arc::clone(store);
+                let tunnel_id_clone = tunnel_id.clone();
+                Some(tokio::spawn(async move {
+                    let mut interval = tokio::time::interval(Duration::from_secs(30));
+                    loop {
+                        interval.tick().await;
+                        store_clone.heartbeat(&tunnel_id_clone).await;
+                    }
+                }))
+            } else {
+                store.set_tunnel_info(public_url.clone(), upstream_url.clone()).await;
+                None
+            }
+        } else {
+            None
+        };
+
+        // Register with inspector client if in client mode and start heartbeat
+        let client_heartbeat_task = if let Some(ref client) = self.inspector_client {
+            if let Err(e) = client.register(
+                &self.requested_subdomain.clone().unwrap_or_default(),
+                &public_url,
+                &upstream_url,
+            ).await {
+                tracing::warn!("Failed to register with inspector: {}", e);
+                None
+            } else {
+                // Start heartbeat task to keep registration alive
+                Some(Arc::clone(client).start_heartbeat_task())
+            }
+        } else {
+            None
+        };
 
         let mut tunnel_info = format!(
             "{} {} {}\n{} {} {}",
@@ -211,7 +262,22 @@ impl TunnelClient {
         println!();
 
         // Start bidirectional communication
-        self.handle_tunnel(write, read, None).await
+        let result = self.handle_tunnel(write, read, None).await;
+
+        // Cleanup: abort heartbeat tasks
+        if let Some(task) = server_heartbeat_task {
+            task.abort();
+        }
+        if let Some(task) = client_heartbeat_task {
+            task.abort();
+        }
+
+        // Unregister from inspector on shutdown
+        if let Some(ref client) = self.inspector_client {
+            let _ = client.unregister().await;
+        }
+
+        result
     }
 
     /// Run with full TUI
@@ -265,18 +331,58 @@ impl TunnelClient {
         let local_addr = self.format_upstream();
         let inspector_url = inspect_port.map(|p| format!("http://localhost:{}", p));
 
-        // Set tunnel info in inspector store for status page
-        if let Some(ref store) = self.inspector {
-            store.set_tunnel_info(public_url.clone(), local_addr.clone()).await;
-        }
+        // Update tunnel info in inspector store (server mode)
+        // This updates both the legacy tunnel_info and the registered tunnel's public_url
+        let server_heartbeat_task = if let Some(ref store) = self.inspector {
+            if let Some(ref tunnel_id) = self.tunnel_id {
+                // Update the registered tunnel's public_url
+                store.update_tunnel_url(tunnel_id, public_url.clone()).await;
+                // Also update local_addr in legacy info
+                store.set_tunnel_info(public_url.clone(), local_addr.clone()).await;
+
+                // Start heartbeat task for server-mode tunnel
+                let store_clone = Arc::clone(store);
+                let tunnel_id_clone = tunnel_id.clone();
+                Some(tokio::spawn(async move {
+                    let mut interval = tokio::time::interval(Duration::from_secs(30));
+                    loop {
+                        interval.tick().await;
+                        store_clone.heartbeat(&tunnel_id_clone).await;
+                    }
+                }))
+            } else {
+                store.set_tunnel_info(public_url.clone(), local_addr.clone()).await;
+                None
+            }
+        } else {
+            None
+        };
+
+        // Register with inspector client if in client mode and start heartbeat
+        let client_heartbeat_task = if let Some(ref client) = self.inspector_client {
+            if let Err(e) = client.register(
+                &self.requested_subdomain.clone().unwrap_or_default(),
+                &public_url,
+                &local_addr,
+            ).await {
+                tracing::warn!("Failed to register with inspector: {}", e);
+                None
+            } else {
+                // Start heartbeat task to keep registration alive
+                Some(Arc::clone(client).start_heartbeat_task())
+            }
+        } else {
+            None
+        };
 
         // Create TUI app
         let tunnel_info = TunnelInfo {
-            public_url,
+            public_url: public_url.clone(),
             local_addr,
             inspector_url,
             status: TunnelStatus::Online,
             user_email: None, // TODO: Get from server when available
+            user_plan: None,  // TODO: Get from server when available
             version: env!("CARGO_PKG_VERSION").to_string(),
             latency_ms: Some(latency_ms),
         };
@@ -293,9 +399,17 @@ impl TunnelClient {
 
         let mut app = TuiApp::new(tunnel_info);
 
+        // Fetch ads from server in background (don't block TUI startup)
+        let server_url = self.server_url.clone();
+        let ads_tx = tui_tx.clone();
+        tokio::spawn(async move {
+            let ads = fetch_ads_from_server(&server_url).await;
+            let _ = ads_tx.send(TuiEvent::AdsUpdate(ads)).await;
+        });
+
         // Run event loop
         let result = self
-            .run_tui_loop(&mut terminal, &mut app, write, read, tui_tx, tui_rx)
+            .run_tui_loop(&mut terminal, &mut app, write, read, tui_tx, tui_rx, server_heartbeat_task, client_heartbeat_task)
             .await;
 
         // Restore terminal
@@ -321,9 +435,41 @@ impl TunnelClient {
         mut read: futures_util::stream::SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
         tui_tx: mpsc::Sender<TuiEvent>,
         mut tui_rx: mpsc::Receiver<TuiEvent>,
+        server_heartbeat_task: Option<tokio::task::JoinHandle<()>>,
+        client_heartbeat_task: Option<tokio::task::JoinHandle<()>>,
     ) -> Result<()> {
+        struct HeartbeatGuard {
+            server: Option<tokio::task::JoinHandle<()>>,
+            client: Option<tokio::task::JoinHandle<()>>,
+        }
+
+        impl HeartbeatGuard {
+            fn new(
+                server: Option<tokio::task::JoinHandle<()>>,
+                client: Option<tokio::task::JoinHandle<()>>,
+            ) -> Self {
+                Self { server, client }
+            }
+
+            fn abort_all(&mut self) {
+                if let Some(task) = self.server.take() {
+                    task.abort();
+                }
+                if let Some(task) = self.client.take() {
+                    task.abort();
+                }
+            }
+        }
+
+        impl Drop for HeartbeatGuard {
+            fn drop(&mut self) {
+                self.abort_all();
+            }
+        }
+
         let write = Arc::new(Mutex::new(write));
         let (packet_tx, mut packet_rx) = mpsc::channel::<ControlPacket>(100);
+        let mut heartbeat_guard = HeartbeatGuard::new(server_heartbeat_task, client_heartbeat_task);
 
         // Active request body receivers
         let body_receivers: Arc<Mutex<HashMap<String, RequestBodyState>>> =
@@ -344,11 +490,18 @@ impl TunnelClient {
         let basic_auth = self.basic_auth.clone();
         let host_header = self.host_header.clone();
         let inspector = self.inspector.clone();
+        let inspector_client = self.inspector_client.clone();
+        let tunnel_id = self.tunnel_id.clone();
 
         // Metrics update interval
         let mut metrics_interval = tokio::time::interval(Duration::from_secs(1));
         let mut tick_interval = tokio::time::interval(Duration::from_millis(100));
         let mut ping_interval = tokio::time::interval(Duration::from_secs(constants::WS_PING_INTERVAL_SECONDS));
+        // Ad rotation starts after 15 seconds (not immediately)
+        let mut ad_rotation_interval = tokio::time::interval_at(
+            tokio::time::Instant::now() + Duration::from_secs(15),
+            Duration::from_secs(15),
+        );
 
         loop {
             // Draw UI
@@ -361,6 +514,12 @@ impl TunnelClient {
                         if let Event::Key(key) = event::read()? {
                             app.handle_event(TuiEvent::Key(key));
                             if app.should_quit {
+                                // Cleanup: abort heartbeat tasks
+                                heartbeat_guard.abort_all();
+                                // Unregister from inspector on quit
+                                if let Some(ref client) = self.inspector_client {
+                                    let _ = client.unregister().await;
+                                }
                                 return Ok(());
                             }
                         }
@@ -383,6 +542,8 @@ impl TunnelClient {
                                             let websockets = websockets.clone();
                                             let http_client = http_client.clone();
                                             let inspector = inspector.clone();
+                                            let inspector_client = inspector_client.clone();
+                                            let tunnel_id = tunnel_id.clone();
                                             let tui_tx = tui_tx.clone();
 
                                             tokio::spawn(async move {
@@ -395,6 +556,8 @@ impl TunnelClient {
                                                     packet_tx,
                                                     websockets,
                                                     inspector,
+                                                    inspector_client,
+                                                    tunnel_id,
                                                     http_client,
                                                     body_receivers,
                                                     tui_tx,
@@ -465,15 +628,33 @@ impl TunnelClient {
                         Some(Ok(Message::Pong(_))) => {}
                         Some(Ok(Message::Close(_))) => {
                             app.tunnel_info.status = TunnelStatus::Offline;
+                            // Cleanup: abort heartbeat tasks
+                            heartbeat_guard.abort_all();
+                            // Unregister from inspector on shutdown
+                            if let Some(ref client) = self.inspector_client {
+                                let _ = client.unregister().await;
+                            }
                             return Ok(());
                         }
                         Some(Err(e)) => {
                             tracing::error!("WebSocket error: {}", e);
                             app.tunnel_info.status = TunnelStatus::Offline;
+                            // Cleanup: abort heartbeat tasks
+                            heartbeat_guard.abort_all();
+                            // Unregister from inspector on shutdown
+                            if let Some(ref client) = self.inspector_client {
+                                let _ = client.unregister().await;
+                            }
                             return Err(e.into());
                         }
                         None => {
                             app.tunnel_info.status = TunnelStatus::Offline;
+                            // Cleanup: abort heartbeat tasks
+                            heartbeat_guard.abort_all();
+                            // Unregister from inspector on shutdown
+                            if let Some(ref client) = self.inspector_client {
+                                let _ = client.unregister().await;
+                            }
                             return Ok(());
                         }
                         _ => {}
@@ -490,7 +671,12 @@ impl TunnelClient {
                 // Update metrics periodically
                 _ = metrics_interval.tick() => {
                     if let Some(ref store) = self.inspector {
-                        let metrics = store.get_metrics().await;
+                        // Use tunnel-specific metrics if we have a tunnel_id
+                        let metrics = if let Some(ref tid) = self.tunnel_id {
+                            store.get_tunnel_metrics(tid).await.unwrap_or_default()
+                        } else {
+                            store.get_metrics().await
+                        };
                         app.update_metrics(metrics);
                     }
                 }
@@ -498,6 +684,11 @@ impl TunnelClient {
                 // Send ping to keep connection alive
                 _ = ping_interval.tick() => {
                     let _ = packet_tx.send(ControlPacket::Ping).await;
+                }
+
+                // Rotate ads periodically
+                _ = ad_rotation_interval.tick() => {
+                    app.handle_event(TuiEvent::AdRotate);
                 }
 
                 // Handle TUI events from request handlers
@@ -518,6 +709,8 @@ impl TunnelClient {
         packet_tx: mpsc::Sender<ControlPacket>,
         websockets: Arc<Mutex<HashMap<String, LocalWebSocket>>>,
         inspector: Option<Arc<RequestStore>>,
+        inspector_client: Option<Arc<InspectorClient>>,
+        tunnel_id: Option<String>,
         http_client: reqwest::Client,
         body_receivers: Arc<Mutex<HashMap<String, RequestBodyState>>>,
         tui_tx: mpsc::Sender<TuiEvent>,
@@ -549,6 +742,8 @@ impl TunnelClient {
             packet_tx,
             websockets,
             inspector,
+            inspector_client,
+            tunnel_id,
             Some(tui_tx),
         )
         .await;
@@ -586,6 +781,9 @@ impl TunnelClient {
         let upstream_tls = self.upstream_tls;
         let basic_auth = self.basic_auth.clone();
         let host_header = self.host_header.clone();
+        let inspector = self.inspector.clone();
+        let inspector_client = self.inspector_client.clone();
+        let tunnel_id = self.tunnel_id.clone();
 
         // Ping task
         let ping_tx = packet_tx.clone();
@@ -681,7 +879,9 @@ impl TunnelClient {
                             let basic_auth = basic_auth.clone();
                             let websockets = websockets.clone();
                             let http_client = http_client.clone();
-                            let inspector = self.inspector.clone();
+                            let inspector = inspector.clone();
+                            let inspector_client = inspector_client.clone();
+                            let tunnel_id = tunnel_id.clone();
 
                             tokio::spawn(async move {
                                 Self::handle_request(
@@ -695,6 +895,8 @@ impl TunnelClient {
                                     packet_tx,
                                     websockets,
                                     inspector,
+                                    inspector_client,
+                                    tunnel_id,
                                     None, // No TUI in simple mode
                                 )
                                 .await;
@@ -812,6 +1014,8 @@ impl TunnelClient {
         packet_tx: mpsc::Sender<ControlPacket>,
         websockets: Arc<Mutex<HashMap<String, LocalWebSocket>>>,
         inspector: Option<Arc<RequestStore>>,
+        inspector_client: Option<Arc<InspectorClient>>,
+        tunnel_id: Option<String>,
         tui_tx: Option<mpsc::Sender<TuiEvent>>,
     ) {
         let start_time = Instant::now();
@@ -835,7 +1039,13 @@ impl TunnelClient {
 
         // Increment open connections count
         if let Some(ref store) = inspector {
-            store.metrics().increment_connections().await;
+            if let Some(metrics) = store.metrics_for_tunnel(&tunnel_id.clone().unwrap_or_default()).await {
+                metrics.increment_connections().await;
+            }
+        }
+        // Emit connection opened event for TUI (works in both modes)
+        if let Some(ref tx) = tui_tx {
+            let _ = tx.send(TuiEvent::ConnectionOpened).await;
         }
 
         // Store request headers for inspector
@@ -905,14 +1115,20 @@ impl TunnelClient {
                 let _ = packet_tx.send(ControlPacket::End { stream_id }).await;
                 // Decrement connection count before early return
                 if let Some(ref store) = inspector {
-                    store.metrics().decrement_connections().await;
+                    if let Some(metrics) = store.metrics_for_tunnel(&tunnel_id.clone().unwrap_or_default()).await {
+                        metrics.decrement_connections().await;
+                    }
+                }
+                // Emit connection closed event for TUI
+                if let Some(ref tx) = tui_tx {
+                    let _ = tx.send(TuiEvent::ConnectionClosed).await;
                 }
                 return;
             }
         }
 
         // Collect request body chunks for inspector (if enabled) and create stream
-        let capture_body = inspector.is_some();
+        let capture_body = inspector.is_some() || inspector_client.is_some();
         let mut captured_request_body = Vec::new();
 
         // Collect all body chunks first
@@ -962,7 +1178,13 @@ impl TunnelClient {
                     .is_err()
                 {
                     if let Some(ref store) = inspector {
-                        store.metrics().decrement_connections().await;
+                        if let Some(metrics) = store.metrics_for_tunnel(&tunnel_id.clone().unwrap_or_default()).await {
+                            metrics.decrement_connections().await;
+                        }
+                    }
+                    // Emit connection closed event for TUI
+                    if let Some(ref tx) = tui_tx {
+                        let _ = tx.send(TuiEvent::ConnectionClosed).await;
                     }
                     return;
                 }
@@ -978,7 +1200,7 @@ impl TunnelClient {
                             total_bytes += chunk.len();
 
                             // Capture response body (limit to 1MB)
-                            if inspector.is_some() && captured_response_body.len() < 1024 * 1024 {
+                            if capture_body && captured_response_body.len() < 1024 * 1024 {
                                 captured_response_body.extend_from_slice(&chunk);
                             }
 
@@ -993,7 +1215,13 @@ impl TunnelClient {
                                     .is_err()
                                 {
                                     if let Some(ref store) = inspector {
-                                        store.metrics().decrement_connections().await;
+                                        if let Some(metrics) = store.metrics_for_tunnel(&tunnel_id.clone().unwrap_or_default()).await {
+                                            metrics.decrement_connections().await;
+                                        }
+                                    }
+                                    // Emit connection closed event for TUI
+                                    if let Some(ref tx) = tui_tx {
+                                        let _ = tx.send(TuiEvent::ConnectionClosed).await;
                                     }
                                     return;
                                 }
@@ -1008,7 +1236,13 @@ impl TunnelClient {
                                 })
                                 .await;
                             if let Some(ref store) = inspector {
-                                store.metrics().decrement_connections().await;
+                                if let Some(metrics) = store.metrics_for_tunnel(&tunnel_id.clone().unwrap_or_default()).await {
+                                    metrics.decrement_connections().await;
+                                }
+                            }
+                            // Emit connection closed event for TUI
+                            if let Some(ref tx) = tui_tx {
+                                let _ = tx.send(TuiEvent::ConnectionClosed).await;
                             }
                             return;
                         }
@@ -1022,9 +1256,10 @@ impl TunnelClient {
                 Self::log_request(&method, &uri, status, elapsed, total_bytes);
 
                 // Store captured request in inspector and emit to TUI
-                if let Some(store) = &inspector {
+                if inspector.is_some() || inspector_client.is_some() {
                     let captured = CapturedRequest {
-                        id: stream_id,
+                        id: stream_id.clone(),
+                        tunnel_id: tunnel_id.clone().unwrap_or_default(),
                         timestamp: Utc::now(),
                         method: method.clone(),
                         path: uri.clone(),
@@ -1040,9 +1275,20 @@ impl TunnelClient {
                     if let Some(ref tx) = tui_tx {
                         let _ = tx.send(TuiEvent::NewRequest(captured.clone())).await;
                     }
-                    store.add_request(captured).await;
-                    // Decrement connection count
-                    store.metrics().decrement_connections().await;
+                    // Submit to inspector (client mode) or local store (server mode)
+                    if let Some(ref client) = inspector_client {
+                        let _ = client.submit_request(captured).await;
+                    } else if let Some(ref store) = inspector {
+                        store.add_request_for_tunnel(&tunnel_id.clone().unwrap_or_default(), captured).await;
+                        // Decrement connection count (server mode only - has local metrics)
+                        if let Some(metrics) = store.metrics_for_tunnel(&tunnel_id.clone().unwrap_or_default()).await {
+                            metrics.decrement_connections().await;
+                        }
+                    }
+                }
+                // Emit connection closed event for TUI (always, even without inspector)
+                if let Some(ref tx) = tui_tx {
+                    let _ = tx.send(TuiEvent::ConnectionClosed).await;
                 }
             }
             Err(e) => {
@@ -1069,9 +1315,10 @@ impl TunnelClient {
                 Self::log_request(&method, &uri, 502, elapsed, 0);
 
                 // Store failed request in inspector and emit to TUI
-                if let Some(store) = &inspector {
+                if inspector.is_some() || inspector_client.is_some() {
                     let captured = CapturedRequest {
-                        id: stream_id,
+                        id: stream_id.clone(),
+                        tunnel_id: tunnel_id.clone().unwrap_or_default(),
                         timestamp: Utc::now(),
                         method: method.clone(),
                         path: uri.clone(),
@@ -1087,9 +1334,20 @@ impl TunnelClient {
                     if let Some(ref tx) = tui_tx {
                         let _ = tx.send(TuiEvent::NewRequest(captured.clone())).await;
                     }
-                    store.add_request(captured).await;
-                    // Decrement connection count
-                    store.metrics().decrement_connections().await;
+                    // Submit to inspector (client mode) or local store (server mode)
+                    if let Some(ref client) = inspector_client {
+                        let _ = client.submit_request(captured).await;
+                    } else if let Some(ref store) = inspector {
+                        store.add_request_for_tunnel(&tunnel_id.clone().unwrap_or_default(), captured).await;
+                        // Decrement connection count (server mode only - has local metrics)
+                        if let Some(metrics) = store.metrics_for_tunnel(&tunnel_id.clone().unwrap_or_default()).await {
+                            metrics.decrement_connections().await;
+                        }
+                    }
+                }
+                // Emit connection closed event for TUI
+                if let Some(ref tx) = tui_tx {
+                    let _ = tx.send(TuiEvent::ConnectionClosed).await;
                 }
             }
         }
@@ -1373,4 +1631,72 @@ fn print_qr_code(url: &str) {
 /// Supported by most modern terminals (iTerm2, Windows Terminal, GNOME Terminal, etc.)
 fn terminal_link(url: &str, text: &str) -> String {
     format!("\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\", url, text)
+}
+
+/// Fetch ads from the server
+async fn fetch_ads_from_server(server_url: &str) -> Vec<crate::tui::Ad> {
+    use crate::tui::Ad;
+
+    // Parse URL and extract host, stripping any path (e.g., /_dvaar/tunnel)
+    let (scheme, host) = if server_url.starts_with("wss://") {
+        let rest = server_url.strip_prefix("wss://").unwrap_or(server_url);
+        let host = rest.split('/').next().unwrap_or(rest);
+        ("https", host)
+    } else if server_url.starts_with("ws://") {
+        let rest = server_url.strip_prefix("ws://").unwrap_or(server_url);
+        let host = rest.split('/').next().unwrap_or(rest);
+        ("http", host)
+    } else if server_url.starts_with("https://") {
+        let rest = server_url.strip_prefix("https://").unwrap_or(server_url);
+        let host = rest.split('/').next().unwrap_or(rest);
+        ("https", host)
+    } else if server_url.starts_with("http://") {
+        let rest = server_url.strip_prefix("http://").unwrap_or(server_url);
+        let host = rest.split('/').next().unwrap_or(rest);
+        ("http", host)
+    } else {
+        ("https", server_url)
+    };
+
+    // Replace tunnel/api server host with admin server host
+    // e.g., tunnel.dvaar.app -> admin.dvaar.app
+    //       api.dvaar.io -> admin.dvaar.io
+    let admin_host = host
+        .replace("tunnel.dvaar.app", "admin.dvaar.app")
+        .replace("tunnel.dvaar.io", "admin.dvaar.io")
+        .replace("api.dvaar.app", "admin.dvaar.app")
+        .replace("api.dvaar.io", "admin.dvaar.io");
+
+    let ads_url = format!("{}://{}/api/ads", scheme, admin_host);
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .ok();
+
+    if let Some(client) = client {
+        match client.get(&ads_url).send().await {
+            Ok(response) if response.status().is_success() => {
+                match response.json::<Vec<Ad>>().await {
+                    Ok(ads) if !ads.is_empty() => return ads,
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Return default ads if fetch fails
+    vec![
+        Ad {
+            title: "Berry.me".to_string(),
+            description: "AI assistant that does tasks for you".to_string(),
+            url: "https://berry.me".to_string(),
+        },
+        Ad {
+            title: "Ralfie.ai".to_string(),
+            description: "Open source AI agent orchestration".to_string(),
+            url: "https://ralfie.ai".to_string(),
+        },
+    ]
 }

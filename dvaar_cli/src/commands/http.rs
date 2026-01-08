@@ -1,7 +1,7 @@
 //! HTTP tunnel command
 
 use crate::config::{generate_session_id, logs_dir, Config, Session, Sessions};
-use crate::inspector::RequestStore;
+use crate::inspector::{find_inspector_port, InspectorClient, InspectorMode, RegisteredTunnel, RequestStore, TunnelStatus};
 use crate::tunnel::client::TunnelClient;
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -10,6 +10,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
+use uuid::Uuid;
 
 /// HTTP tunnel options
 #[derive(Debug, Clone)]
@@ -52,14 +53,41 @@ pub async fn run(opts: HttpOptions) -> Result<()> {
         target_addr
     };
 
-    // Start inspector if enabled
-    let (inspector_store, _inspector_handle) = if let Some(port) = opts.inspect_port {
-        let store = Arc::new(RequestStore::new());
-        let handle = crate::inspector::start_server(port, store.clone()).await?;
-        (Some(store), Some(handle))
-    } else {
-        (None, None)
-    };
+    // Generate unique tunnel ID
+    let tunnel_id = Uuid::new_v4().to_string();
+
+    // Determine inspector mode if inspector is enabled
+    let (inspector_store, inspector_client, actual_inspect_port, _inspector_handle) =
+        if let Some(port) = opts.inspect_port {
+            match find_inspector_port(port).await? {
+                InspectorMode::Server(actual_port) => {
+                    // We're the first tunnel - start the inspector server
+                    let store = Arc::new(RequestStore::new());
+                    let handle = crate::inspector::start_server(actual_port, store.clone()).await?;
+
+                    // Register ourselves as the primary tunnel
+                    // (public_url will be set after connection)
+                    store.register_tunnel(RegisteredTunnel {
+                        tunnel_id: tunnel_id.clone(),
+                        subdomain: opts.subdomain.clone().unwrap_or_default(),
+                        public_url: String::new(),
+                        local_addr: actual_target.clone(),
+                        status: TunnelStatus::Active,
+                        registered_at: Utc::now(),
+                        last_seen: Utc::now(),
+                    }).await;
+
+                    (Some(store), None, Some(actual_port), Some(handle))
+                }
+                InspectorMode::Client(actual_port) => {
+                    // Inspector already running - connect as client
+                    let client = InspectorClient::new(actual_port, tunnel_id.clone());
+                    (None, Some(client), Some(actual_port), None)
+                }
+            }
+        } else {
+            (None, None, None, None)
+        };
 
     let mut client = TunnelClient::new(
         &config.websocket_url(),
@@ -81,13 +109,19 @@ pub async fn run(opts: HttpOptions) -> Result<()> {
     // Set TLS mode
     client.set_upstream_tls(opts.use_tls);
 
-    // Set inspector store
+    // Set inspector store or client
     if let Some(store) = inspector_store {
         client.set_inspector(store);
     }
+    if let Some(inspector_client) = inspector_client {
+        client.set_inspector_client(inspector_client);
+    }
+
+    // Set tunnel ID for registration
+    client.set_tunnel_id(tunnel_id);
 
     // Run the tunnel
-    let result = client.run(opts.inspect_port, opts.tui_mode).await;
+    let result = client.run(actual_inspect_port, opts.tui_mode).await;
 
     if let Err(e) = result {
         if opts.tui_mode {

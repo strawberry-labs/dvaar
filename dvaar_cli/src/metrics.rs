@@ -24,7 +24,7 @@ struct MetricsInner {
 }
 
 /// Snapshot of current metrics
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct MetricsSnapshot {
     pub total_requests: u64,
     pub open_connections: u32,

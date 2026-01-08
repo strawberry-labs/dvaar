@@ -6,10 +6,10 @@ use axum::{
     extract::{Request, State},
     http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Build the admin router
@@ -19,6 +19,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/metrics", get(get_metrics))
         .route("/api/health", get(health_check))
         .route("/api/nodes", get(get_nodes))
+        .route("/api/ads", get(get_ads).post(set_ads))
 }
 
 /// Validate admin token from header or query
@@ -35,6 +36,32 @@ fn validate_admin(state: &AppState, headers: &HeaderMap) -> bool {
         .map(|t| t == admin_token)
         .unwrap_or(false)
 }
+
+/// Advertisement for CLI TUI display
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Ad {
+    pub title: String,
+    pub description: String,
+    pub url: String,
+}
+
+/// Default ads when none configured
+fn default_ads() -> Vec<Ad> {
+    vec![
+        Ad {
+            title: "Berry.me".to_string(),
+            description: "AI assistant that does tasks for you".to_string(),
+            url: "https://berry.me".to_string(),
+        },
+        Ad {
+            title: "Ralfie.ai".to_string(),
+            description: "Open source AI agent orchestration".to_string(),
+            url: "https://ralfie.ai".to_string(),
+        },
+    ]
+}
+
+const ADS_REDIS_KEY: &str = "dvaar:ads";
 
 #[derive(Serialize)]
 struct Metrics {
@@ -164,6 +191,57 @@ async fn get_nodes(State(state): State<AppState>, headers: HeaderMap) -> Respons
     }];
 
     Json(nodes).into_response()
+}
+
+/// Get ads list (public endpoint - no auth required)
+async fn get_ads(State(state): State<AppState>) -> Response {
+    // Try to get ads from Redis
+    let ads: Vec<Ad> = match state.route_manager.get_ads(ADS_REDIS_KEY).await {
+        Ok(Some(json_str)) => {
+            serde_json::from_str(&json_str).unwrap_or_else(|_| default_ads())
+        }
+        _ => default_ads(),
+    };
+
+    Json(ads).into_response()
+}
+
+/// Set ads list (admin auth required)
+async fn set_ads(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(ads): Json<Vec<Ad>>,
+) -> Response {
+    if !validate_admin(&state, &headers) {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+
+    // Validate ads
+    if ads.is_empty() {
+        return (StatusCode::BAD_REQUEST, "At least one ad is required").into_response();
+    }
+
+    for ad in &ads {
+        if ad.title.is_empty() || ad.url.is_empty() {
+            return (StatusCode::BAD_REQUEST, "Each ad must have title and url").into_response();
+        }
+    }
+
+    // Store in Redis
+    let json_str = match serde_json::to_string(&ads) {
+        Ok(s) => s,
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to serialize ads").into_response(),
+    };
+
+    if let Err(e) = state.route_manager.store_ads(ADS_REDIS_KEY, &json_str).await {
+        tracing::error!("Failed to store ads in Redis: {}", e);
+        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to store ads").into_response();
+    }
+
+    Json(serde_json::json!({
+        "status": "ok",
+        "ads_count": ads.len()
+    })).into_response()
 }
 
 /// Admin dashboard HTML
@@ -349,13 +427,27 @@ pub async fn handle_admin_request(
     request: Request<Body>,
 ) -> Response {
     let path = request.uri().path();
+    let method = request.method().clone();
     let headers = request.headers().clone();
 
-    match path {
-        "/" => admin_dashboard(State(state), headers).await,
-        "/api/metrics" => get_metrics(State(state), headers).await,
-        "/api/health" => health_check(State(state)).await,
-        "/api/nodes" => get_nodes(State(state), headers).await,
+    match (method.as_str(), path) {
+        ("GET", "/") => admin_dashboard(State(state), headers).await,
+        ("GET", "/api/metrics") => get_metrics(State(state), headers).await,
+        ("GET", "/api/health") => health_check(State(state)).await,
+        ("GET", "/api/nodes") => get_nodes(State(state), headers).await,
+        ("GET", "/api/ads") => get_ads(State(state)).await,
+        ("POST", "/api/ads") => {
+            // Extract body for POST
+            let body_bytes = match axum::body::to_bytes(request.into_body(), 1024 * 64).await {
+                Ok(bytes) => bytes,
+                Err(_) => return (StatusCode::BAD_REQUEST, "Failed to read body").into_response(),
+            };
+            let ads: Vec<Ad> = match serde_json::from_slice(&body_bytes) {
+                Ok(ads) => ads,
+                Err(_) => return (StatusCode::BAD_REQUEST, "Invalid JSON").into_response(),
+            };
+            set_ads(State(state), headers, Json(ads)).await
+        }
         _ => (StatusCode::NOT_FOUND, "Not found").into_response(),
     }
 }

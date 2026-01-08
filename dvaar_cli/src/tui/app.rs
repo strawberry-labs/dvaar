@@ -3,7 +3,29 @@
 use crate::inspector::CapturedRequest;
 use crate::metrics::MetricsSnapshot;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
+
+/// Advertisement/sponsor to display in TUI
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Ad {
+    /// Short title (e.g., "Berry.me")
+    pub title: String,
+    /// Description (e.g., "AI assistant like Manus")
+    pub description: String,
+    /// URL to visit
+    pub url: String,
+}
+
+impl Default for Ad {
+    fn default() -> Self {
+        Self {
+            title: "Berry.me".to_string(),
+            description: "AI assistant that does tasks for you".to_string(),
+            url: "https://berry.me".to_string(),
+        }
+    }
+}
 
 /// TUI view modes
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,6 +62,7 @@ pub struct TunnelInfo {
     pub inspector_url: Option<String>,
     pub status: TunnelStatus,
     pub user_email: Option<String>,
+    pub user_plan: Option<String>,
     pub version: String,
     pub latency_ms: Option<u64>,
 }
@@ -52,6 +75,7 @@ impl Default for TunnelInfo {
             inspector_url: None,
             status: TunnelStatus::Connecting,
             user_email: None,
+            user_plan: None,
             version: env!("CARGO_PKG_VERSION").to_string(),
             latency_ms: None,
         }
@@ -73,6 +97,14 @@ pub enum TuiEvent {
     Key(KeyEvent),
     /// Tick for periodic updates
     Tick,
+    /// Ad rotation tick
+    AdRotate,
+    /// Update ads list from server
+    AdsUpdate(Vec<Ad>),
+    /// Connection opened (for tracking open connections in client mode)
+    ConnectionOpened,
+    /// Connection closed (for tracking open connections in client mode)
+    ConnectionClosed,
 }
 
 /// TUI application state
@@ -85,10 +117,35 @@ pub struct TuiApp {
     pub scroll_offset: usize,
     pub selected_index: usize,
     pub should_quit: bool,
+    /// QR code as text lines for rendering
+    pub qr_code_lines: Vec<String>,
+    /// List of ads to rotate through
+    pub ads: Vec<Ad>,
+    /// Current ad index
+    pub current_ad_index: usize,
+    /// Local tracking of open connections (for client mode)
+    pub local_open_connections: u32,
 }
 
 impl TuiApp {
     pub fn new(tunnel_info: TunnelInfo) -> Self {
+        // Generate QR code for the public URL
+        let qr_code_lines = generate_qr_code(&tunnel_info.public_url);
+
+        // Default ads (will be replaced by server fetch)
+        let default_ads = vec![
+            Ad {
+                title: "Berry.me".to_string(),
+                description: "AI assistant that does tasks for you".to_string(),
+                url: "https://berry.me".to_string(),
+            },
+            Ad {
+                title: "Ralfie.ai".to_string(),
+                description: "Open source AI agent orchestration".to_string(),
+                url: "https://ralfie.ai".to_string(),
+            },
+        ];
+
         Self {
             view: View::Main,
             tunnel_info,
@@ -108,6 +165,30 @@ impl TuiApp {
             scroll_offset: 0,
             selected_index: 0,
             should_quit: false,
+            qr_code_lines,
+            ads: default_ads,
+            current_ad_index: 0,
+            local_open_connections: 0,
+        }
+    }
+
+    /// Rotate to next ad
+    pub fn rotate_ad(&mut self) {
+        if !self.ads.is_empty() {
+            self.current_ad_index = (self.current_ad_index + 1) % self.ads.len();
+        }
+    }
+
+    /// Get current ad
+    pub fn current_ad(&self) -> Option<&Ad> {
+        self.ads.get(self.current_ad_index)
+    }
+
+    /// Update ads list
+    pub fn set_ads(&mut self, ads: Vec<Ad>) {
+        if !ads.is_empty() {
+            self.ads = ads;
+            self.current_ad_index = 0;
         }
     }
 
@@ -185,6 +266,61 @@ impl TuiApp {
             TuiEvent::TunnelInfoUpdate(info) => self.update_tunnel_info(info),
             TuiEvent::Key(key) => self.handle_key(key),
             TuiEvent::Tick => {} // Just triggers a redraw
+            TuiEvent::AdRotate => self.rotate_ad(),
+            TuiEvent::AdsUpdate(ads) => self.set_ads(ads),
+            TuiEvent::ConnectionOpened => {
+                self.local_open_connections += 1;
+                // Update metrics display with local count if store metrics show 0
+                if self.metrics.open_connections == 0 {
+                    self.metrics.open_connections = self.local_open_connections;
+                }
+            }
+            TuiEvent::ConnectionClosed => {
+                self.local_open_connections = self.local_open_connections.saturating_sub(1);
+                // Update metrics display with local count if store metrics show 0
+                if self.metrics.open_connections == 0 || self.metrics.open_connections > self.local_open_connections {
+                    self.metrics.open_connections = self.local_open_connections;
+                }
+            }
         }
     }
+}
+
+/// Generate QR code as text lines for terminal display
+fn generate_qr_code(url: &str) -> Vec<String> {
+    use qrcode::{QrCode, EcLevel};
+
+    let code = match QrCode::with_error_correction_level(url, EcLevel::L) {
+        Ok(c) => c,
+        Err(_) => return vec!["[QR Error]".to_string()],
+    };
+
+    let mut lines = Vec::new();
+    let modules = code.to_colors();
+    let width = code.width();
+
+    // Use half-block characters for compact display (2 rows per line)
+    // ▀ = top half, ▄ = bottom half, █ = full block, ' ' = empty
+    for y in (0..width).step_by(2) {
+        let mut line = String::new();
+        for x in 0..width {
+            let top = modules[y * width + x];
+            let bottom = if y + 1 < width {
+                modules[(y + 1) * width + x]
+            } else {
+                qrcode::Color::Light
+            };
+
+            let ch = match (top, bottom) {
+                (qrcode::Color::Dark, qrcode::Color::Dark) => '█',
+                (qrcode::Color::Dark, qrcode::Color::Light) => '▀',
+                (qrcode::Color::Light, qrcode::Color::Dark) => '▄',
+                (qrcode::Color::Light, qrcode::Color::Light) => ' ',
+            };
+            line.push(ch);
+        }
+        lines.push(line);
+    }
+
+    lines
 }
