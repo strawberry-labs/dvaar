@@ -11,6 +11,7 @@
 
 mod commands;
 mod config;
+mod inspector;
 mod tunnel;
 mod update;
 
@@ -64,6 +65,14 @@ enum Commands {
         /// Use HTTPS for upstream connection
         #[arg(long)]
         use_tls: bool,
+
+        /// Set custom port for local web inspector (default: 38227)
+        #[arg(long, value_name = "PORT")]
+        inspect: Option<u16>,
+
+        /// Disable local web inspector
+        #[arg(long)]
+        no_inspect: bool,
     },
 
     /// List active tunnels
@@ -142,7 +151,16 @@ async fn main() -> Result<()> {
             host_header,
             detach,
             use_tls,
+            inspect,
+            no_inspect,
         } => {
+            // Inspector is enabled by default on port 38227, unless --no-inspect is set
+            let inspect_port = if no_inspect {
+                None
+            } else {
+                Some(inspect.unwrap_or(38227))
+            };
+
             let opts = commands::http::HttpOptions {
                 target,
                 subdomain,
@@ -150,6 +168,7 @@ async fn main() -> Result<()> {
                 host_header,
                 detach,
                 use_tls,
+                inspect_port,
             };
             commands::http::run(opts).await?;
         }

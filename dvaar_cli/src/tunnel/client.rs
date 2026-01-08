@@ -1,7 +1,9 @@
 //! WebSocket tunnel client with streaming and WebSocket passthrough support
 
+use crate::inspector::{CapturedRequest, RequestStore};
 use anyhow::{Context, Result};
 use bytes::Bytes;
+use chrono::Utc;
 use console::style;
 use dvaar_common::{
     constants, ClientHello, ControlPacket, HttpRequestPacket, HttpResponsePacket, TunnelType,
@@ -30,6 +32,7 @@ pub struct TunnelClient {
     basic_auth: Option<String>,
     host_header: Option<String>,
     upstream_tls: bool,
+    inspector: Option<Arc<RequestStore>>,
 }
 
 /// Active WebSocket connection to local server
@@ -64,6 +67,7 @@ impl TunnelClient {
             basic_auth: None,
             host_header: None,
             upstream_tls: false,
+            inspector: None,
         }
     }
 
@@ -79,8 +83,12 @@ impl TunnelClient {
         self.upstream_tls = tls;
     }
 
+    pub fn set_inspector(&mut self, store: Arc<RequestStore>) {
+        self.inspector = Some(store);
+    }
+
     /// Run the tunnel client
-    pub async fn run(&mut self) -> Result<()> {
+    pub async fn run(&mut self, inspect_port: Option<u16>) -> Result<()> {
         use cliclack::{intro, note, outro_cancel};
 
         let url = format!("{}/_dvaar/tunnel", self.server_url);
@@ -133,17 +141,31 @@ impl TunnelClient {
             anyhow::bail!("Server error: {}", error);
         }
 
-        // Display tunnel info
+        // Display tunnel info with clickable links
         let public_url = format!("https://{}", server_hello.assigned_domain);
-        let tunnel_info = format!(
+        let upstream_url = self.format_upstream();
+
+        let mut tunnel_info = format!(
             "{} {} {}\n{} {} {}",
             style("Public URL:").dim(),
-            style(&public_url).green().bold(),
+            style(terminal_link(&public_url, &public_url)).green().bold(),
             style("").dim(),
             style("Forwarding:").dim(),
-            style(self.format_upstream()).cyan(),
+            style(terminal_link(&upstream_url, &upstream_url)).cyan(),
             style("").dim(),
         );
+
+        // Add inspector URL if enabled
+        if let Some(port) = inspect_port {
+            let inspector_url = format!("http://localhost:{}", port);
+            tunnel_info.push_str(&format!(
+                "\n{} {} {}",
+                style("Inspector:").dim(),
+                style(terminal_link(&inspector_url, &inspector_url)).magenta().bold(),
+                style("").dim(),
+            ));
+        }
+
         note("Tunnel Active", &tunnel_info)?;
 
         // Display QR code
@@ -287,6 +309,7 @@ impl TunnelClient {
                             let basic_auth = basic_auth.clone();
                             let websockets = websockets.clone();
                             let http_client = http_client.clone();
+                            let inspector = self.inspector.clone();
 
                             tokio::spawn(async move {
                                 Self::handle_request(
@@ -299,6 +322,7 @@ impl TunnelClient {
                                     host_header.as_deref(),
                                     packet_tx,
                                     websockets,
+                                    inspector,
                                 )
                                 .await;
                             });
@@ -414,6 +438,7 @@ impl TunnelClient {
         host_header: Option<&str>,
         packet_tx: mpsc::Sender<ControlPacket>,
         websockets: Arc<Mutex<HashMap<String, LocalWebSocket>>>,
+        inspector: Option<Arc<RequestStore>>,
     ) {
         let start_time = Instant::now();
         let stream_id = request.stream_id.clone();
@@ -433,6 +458,9 @@ impl TunnelClient {
             .await;
             return;
         }
+
+        // Store request headers for inspector
+        let request_headers = request.headers.clone();
 
         // Regular HTTP request
         let scheme = if upstream_tls { "https" } else { "http" };
@@ -500,12 +528,24 @@ impl TunnelClient {
             }
         }
 
-        let body_stream = futures_util::stream::unfold(body_rx, |mut rx| async {
-            match rx.recv().await {
-                Some(chunk) => Some((Ok::<Bytes, std::io::Error>(Bytes::from(chunk)), rx)),
-                None => None,
+        // Collect request body chunks for inspector (if enabled) and create stream
+        let capture_body = inspector.is_some();
+        let mut captured_request_body = Vec::new();
+
+        // Collect all body chunks first
+        let mut body_chunks = Vec::new();
+        let mut body_rx = body_rx;
+        while let Some(chunk) = body_rx.recv().await {
+            if capture_body && captured_request_body.len() < 1024 * 1024 {
+                captured_request_body.extend_from_slice(&chunk);
             }
-        });
+            body_chunks.push(chunk);
+        }
+
+        // Create stream from collected chunks
+        let body_stream = futures_util::stream::iter(
+            body_chunks.into_iter().map(|chunk| Ok::<Bytes, std::io::Error>(Bytes::from(chunk)))
+        );
 
         req_builder = req_builder.body(reqwest::Body::wrap_stream(body_stream));
 
@@ -513,7 +553,7 @@ impl TunnelClient {
         match req_builder.send().await {
             Ok(response) => {
                 let status = response.status().as_u16();
-                let headers: Vec<(String, String)> = response
+                let response_headers: Vec<(String, String)> = response
                     .headers()
                     .iter()
                     .filter_map(|(k, v)| {
@@ -531,7 +571,7 @@ impl TunnelClient {
                 let response_packet = HttpResponsePacket {
                     stream_id: stream_id.clone(),
                     status,
-                    headers,
+                    headers: response_headers.clone(),
                 };
                 if packet_tx
                     .send(ControlPacket::HttpResponse(response_packet))
@@ -541,14 +581,21 @@ impl TunnelClient {
                     return;
                 }
 
-                // Stream response body
+                // Stream response body and capture for inspector
                 let mut total_bytes = 0usize;
+                let mut captured_response_body = Vec::new();
                 let mut stream = response.bytes_stream();
 
                 while let Some(chunk_result) = stream.next().await {
                     match chunk_result {
                         Ok(chunk) => {
                             total_bytes += chunk.len();
+
+                            // Capture response body (limit to 1MB)
+                            if inspector.is_some() && captured_response_body.len() < 1024 * 1024 {
+                                captured_response_body.extend_from_slice(&chunk);
+                            }
+
                             // Send in smaller chunks if needed
                             for subchunk in chunk.chunks(STREAM_CHUNK_SIZE) {
                                 if packet_tx
@@ -581,26 +628,65 @@ impl TunnelClient {
 
                 let elapsed = start_time.elapsed();
                 Self::log_request(&method, &uri, status, elapsed, total_bytes);
+
+                // Store captured request in inspector
+                if let Some(store) = inspector {
+                    let captured = CapturedRequest {
+                        id: stream_id,
+                        timestamp: Utc::now(),
+                        method: method.clone(),
+                        path: uri.clone(),
+                        request_headers,
+                        request_body: captured_request_body,
+                        response_status: status,
+                        response_headers,
+                        response_body: captured_response_body,
+                        duration_ms: elapsed.as_millis() as u64,
+                        size_bytes: total_bytes,
+                    };
+                    store.add_request(captured).await;
+                }
             }
             Err(e) => {
                 tracing::error!("Upstream request failed: {}", e);
 
+                let error_body = format!("Bad Gateway: {}", e).into_bytes();
+                let response_headers = vec![("Content-Type".to_string(), "text/plain".to_string())];
+
                 let response = HttpResponsePacket {
                     stream_id: stream_id.clone(),
                     status: 502,
-                    headers: vec![("Content-Type".to_string(), "text/plain".to_string())],
+                    headers: response_headers.clone(),
                 };
                 let _ = packet_tx.send(ControlPacket::HttpResponse(response)).await;
                 let _ = packet_tx
                     .send(ControlPacket::Data {
                         stream_id: stream_id.clone(),
-                        data: format!("Bad Gateway: {}", e).into_bytes(),
+                        data: error_body.clone(),
                     })
                     .await;
                 let _ = packet_tx.send(ControlPacket::End { stream_id: stream_id.clone() }).await;
 
                 let elapsed = start_time.elapsed();
                 Self::log_request(&method, &uri, 502, elapsed, 0);
+
+                // Store failed request in inspector
+                if let Some(store) = inspector {
+                    let captured = CapturedRequest {
+                        id: stream_id,
+                        timestamp: Utc::now(),
+                        method: method.clone(),
+                        path: uri.clone(),
+                        request_headers,
+                        request_body: captured_request_body,
+                        response_status: 502,
+                        response_headers,
+                        response_body: error_body,
+                        duration_ms: elapsed.as_millis() as u64,
+                        size_bytes: 0,
+                    };
+                    store.add_request(captured).await;
+                }
             }
         }
     }
@@ -877,4 +963,10 @@ fn print_qr_code(url: &str) {
     for line in string.lines() {
         println!("  {}", line);
     }
+}
+
+/// Create a clickable terminal hyperlink using OSC 8 escape sequence
+/// Supported by most modern terminals (iTerm2, Windows Terminal, GNOME Terminal, etc.)
+fn terminal_link(url: &str, text: &str) -> String {
+    format!("\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\", url, text)
 }

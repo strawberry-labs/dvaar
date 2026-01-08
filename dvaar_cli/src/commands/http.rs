@@ -1,6 +1,7 @@
 //! HTTP tunnel command
 
 use crate::config::{generate_session_id, logs_dir, Config, Session, Sessions};
+use crate::inspector::RequestStore;
 use crate::tunnel::client::TunnelClient;
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -8,6 +9,7 @@ use console::style;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 
 /// HTTP tunnel options
 #[derive(Debug, Clone)]
@@ -18,6 +20,7 @@ pub struct HttpOptions {
     pub host_header: Option<String>,
     pub detach: bool,
     pub use_tls: bool,
+    pub inspect_port: Option<u16>,
 }
 
 /// Handle HTTP tunnel command
@@ -48,6 +51,15 @@ pub async fn run(opts: HttpOptions) -> Result<()> {
         target_addr
     };
 
+    // Start inspector if enabled
+    let (inspector_store, _inspector_handle) = if let Some(port) = opts.inspect_port {
+        let store = Arc::new(RequestStore::new());
+        let handle = crate::inspector::start_server(port, store.clone()).await?;
+        (Some(store), Some(handle))
+    } else {
+        (None, None)
+    };
+
     let mut client = TunnelClient::new(
         &config.websocket_url(),
         token,
@@ -68,8 +80,13 @@ pub async fn run(opts: HttpOptions) -> Result<()> {
     // Set TLS mode
     client.set_upstream_tls(opts.use_tls);
 
+    // Set inspector store
+    if let Some(store) = inspector_store {
+        client.set_inspector(store);
+    }
+
     // Run the tunnel (this now uses cliclack internally)
-    let result = client.run().await;
+    let result = client.run(opts.inspect_port).await;
 
     if let Err(e) = result {
         cliclack::outro_cancel(format!("Tunnel error: {}", e))?;
@@ -163,6 +180,10 @@ async fn spawn_background(opts: HttpOptions) -> Result<()> {
 
     if opts.use_tls {
         args.push("--use-tls".to_string());
+    }
+
+    if let Some(port) = opts.inspect_port {
+        args.push(format!("--inspect={}", port));
     }
 
     // Get current executable
