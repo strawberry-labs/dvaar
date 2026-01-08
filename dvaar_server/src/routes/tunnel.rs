@@ -222,12 +222,12 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         return;
     }
 
-    // Atomically check and increment concurrent tunnel count
-    // This uses INCR first, then checks limit, and DECRs if over - preventing race conditions
+    // Register tunnel in sorted set (tracks individual tunnels with timestamps)
+    // Stale tunnels auto-expire after 1 min if heartbeat stops
     let user_id_for_cleanup = user.id.to_string();
-    match state.route_manager.try_increment_user_tunnels(&user_id_for_cleanup, concurrent_limit).await {
+    match state.route_manager.register_user_tunnel(&user_id_for_cleanup, &subdomain, concurrent_limit).await {
         Ok((current_tunnels, false)) => {
-            // Over limit - increment was rolled back
+            // Over limit
             tracing::warn!(
                 "Concurrent tunnel limit exceeded for user {}: {}/{} tunnels",
                 user.email,
@@ -258,7 +258,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
             // On Redis error, allow the tunnel (fail open) but log it
         }
         Ok((_, true)) => {
-            // Successfully incremented, we're under the limit
+            // Successfully registered, we're under the limit
         }
     }
 
@@ -270,9 +270,9 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     };
 
     if send_packet(&mut sender, ControlPacket::InitAck(ack)).await.is_err() {
-        // InitAck failed - clean up route AND decrement tunnel count
+        // InitAck failed - clean up route AND unregister tunnel
         let _ = state.route_manager.remove_route(&subdomain).await;
-        let _ = state.route_manager.decrement_user_tunnels(&user_id_for_cleanup).await;
+        let _ = state.route_manager.unregister_user_tunnel(&user_id_for_cleanup, &subdomain).await;
         return;
     }
 
@@ -610,7 +610,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     heartbeat_handle.abort();
     state.tunnels.remove(&subdomain);
     let _ = state.route_manager.remove_route(&subdomain).await;
-    let _ = state.route_manager.decrement_user_tunnels(&user_id_for_cleanup).await;
+    let _ = state.route_manager.unregister_user_tunnel(&user_id_for_cleanup, &subdomain).await;
 
     tracing::info!("Tunnel closed: {}", full_domain);
 }

@@ -281,46 +281,59 @@ impl RouteManager {
         Ok(())
     }
 
-    /// Atomically check and increment concurrent tunnel count for a user.
-    /// Returns (new_count, was_allowed) - if was_allowed is false, the increment was rolled back.
-    /// This is atomic: INCR first, then check limit, DECR if over.
-    pub async fn try_increment_user_tunnels(&self, user_id: &str, limit: u32) -> anyhow::Result<(u32, bool)> {
+    /// Register a tunnel for a user using sorted set with timestamps.
+    /// Each tunnel is tracked individually - stale tunnels auto-expire.
+    /// Returns (current_count, was_allowed).
+    pub async fn register_user_tunnel(&self, user_id: &str, subdomain: &str, limit: u32) -> anyhow::Result<(u32, bool)> {
         let key = format!("{}{}", constants::USER_TUNNELS_PREFIX, user_id);
+        let now = chrono::Utc::now().timestamp();
+        let cutoff = now - constants::USER_TUNNELS_TTL_SECONDS;
 
-        // Atomically increment
-        let new_count: i64 = self.client.incr(&key).await?;
+        // Remove stale tunnels (older than TTL)
+        self.client.zremrangebyscore::<(), _, _, _>(&key, f64::NEG_INFINITY, cutoff as f64).await?;
 
-        // Check if we exceeded the limit (count was already at or above limit before increment)
-        if new_count > limit as i64 {
-            // Roll back the increment
-            let _: i64 = self.client.decr(&key).await?;
-            return Ok((new_count.saturating_sub(1) as u32, false));
+        // Check current count before adding
+        let current_count: i64 = self.client.zcard(&key).await?;
+
+        if current_count >= limit as i64 {
+            return Ok((current_count as u32, false));
         }
 
-        // Set short TTL - heartbeat (30s) keeps it alive
-        // If tunnel dies without cleanup, count auto-expires in ~2 min
-        self.client.expire::<(), _>(&key, constants::USER_TUNNELS_TTL_SECONDS, None).await?;
+        // Add this tunnel with current timestamp as score
+        self.client.zadd::<(), _, _>(&key, None, None, false, false, (now as f64, subdomain)).await?;
 
-        Ok((new_count as u32, true))
+        Ok((current_count as u32 + 1, true))
     }
 
-    /// Decrement concurrent tunnel count for a user
-    pub async fn decrement_user_tunnels(&self, user_id: &str) -> anyhow::Result<()> {
+    /// Unregister a tunnel for a user
+    pub async fn unregister_user_tunnel(&self, user_id: &str, subdomain: &str) -> anyhow::Result<()> {
         let key = format!("{}{}", constants::USER_TUNNELS_PREFIX, user_id);
-        let result: i64 = self.client.decr(&key).await?;
-        // Clean up if count drops to zero or below
-        if result <= 0 {
-            let _ = self.client.del::<(), _>(&key).await;
-        }
+        self.client.zrem::<(), _, _>(&key, subdomain).await?;
         Ok(())
     }
 
-    /// Refresh TTL on user tunnel count (called during heartbeat)
-    pub async fn refresh_user_tunnels_ttl(&self, user_id: &str) -> anyhow::Result<()> {
+    /// Refresh a tunnel's timestamp (called during heartbeat)
+    pub async fn refresh_user_tunnel(&self, user_id: &str, subdomain: &str) -> anyhow::Result<()> {
         let key = format!("{}{}", constants::USER_TUNNELS_PREFIX, user_id);
-        // Refresh TTL - heartbeat runs every 30s so this keeps it alive
-        self.client.expire::<(), _>(&key, constants::USER_TUNNELS_TTL_SECONDS, None).await?;
+        let now = chrono::Utc::now().timestamp();
+
+        // Update this tunnel's timestamp
+        self.client.zadd::<(), _, _>(&key, None, None, false, false, (now as f64, subdomain)).await?;
         Ok(())
+    }
+
+    /// Get current tunnel count for a user (cleaning stale entries)
+    pub async fn count_user_tunnels(&self, user_id: &str) -> anyhow::Result<u32> {
+        let key = format!("{}{}", constants::USER_TUNNELS_PREFIX, user_id);
+        let now = chrono::Utc::now().timestamp();
+        let cutoff = now - constants::USER_TUNNELS_TTL_SECONDS;
+
+        // Remove stale tunnels
+        self.client.zremrangebyscore::<(), _, _, _>(&key, f64::NEG_INFINITY, cutoff as f64).await?;
+
+        // Get count
+        let count: i64 = self.client.zcard(&key).await?;
+        Ok(count as u32)
     }
 }
 
@@ -335,7 +348,7 @@ pub struct NodeInfo {
     pub max_tunnels: u32,
 }
 
-/// Start a heartbeat task that refreshes a route and user tunnel count periodically
+/// Start a heartbeat task that refreshes a route and user tunnel timestamp periodically
 pub fn spawn_heartbeat(
     route_manager: RouteManager,
     subdomain: String,
@@ -355,9 +368,9 @@ pub fn spawn_heartbeat(
                         tracing::debug!("Refreshed route for {}", subdomain);
                     }
 
-                    // Refresh user tunnel count TTL
-                    if let Err(e) = route_manager.refresh_user_tunnels_ttl(&user_id).await {
-                        tracing::error!("Failed to refresh user tunnel TTL for {}: {}", user_id, e);
+                    // Refresh this tunnel's timestamp in the sorted set
+                    if let Err(e) = route_manager.refresh_user_tunnel(&user_id, &subdomain).await {
+                        tracing::error!("Failed to refresh tunnel timestamp for {}: {}", subdomain, e);
                     }
                 }
                 _ = shutdown_rx.changed() => {
