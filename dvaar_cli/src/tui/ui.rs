@@ -21,22 +21,20 @@ pub fn draw(frame: &mut Frame, app: &TuiApp) {
 fn draw_main_view(frame: &mut Frame, app: &TuiApp) {
     // Calculate QR height to determine header height
     let qr_height = app.qr_code_lines.len().min(12) as u16;
-    let header_height = qr_height.max(10) + 3; // +3 for borders and extra spacing
+    let header_height = qr_height.max(13) + 3; // +3 for borders, includes connections line
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(header_height),  // Header with title + sponsor + tunnel info + QR code
-            Constraint::Length(1),  // Metrics row
+            Constraint::Length(header_height),  // Header with all info including connections
             Constraint::Min(5),     // Request table
             Constraint::Length(1),  // Footer
         ])
         .split(frame.area());
 
     draw_unified_header(frame, app, chunks[0]);
-    draw_metrics_row(frame, app, chunks[1]);
-    draw_recent_requests(frame, app, chunks[2]);
-    draw_footer_simple(frame, chunks[3]);
+    draw_recent_requests(frame, app, chunks[1]);
+    draw_footer_simple(frame, chunks[2]);
 }
 
 /// Draw the full request list view
@@ -118,23 +116,31 @@ fn draw_unified_header(frame: &mut Frame, app: &TuiApp, area: Rect) {
     let local_addr = truncate_str(&app.tunnel_info.local_addr, 25);
     let inspector_str = truncate_str(inspector_str, max_url_len);
 
-    // Sponsor line text with "Sponsored by:" prefix
-    let sponsor_text = app.current_ad()
-        .map(|a| format!("{} - {}", a.title, a.description))
+    // Sponsor line - get title and description separately
+    let (sponsor_title, sponsor_desc) = app.current_ad()
+        .map(|a| (a.title.clone(), a.description.clone()))
         .unwrap_or_default();
 
+    // DVAAR logo using half-block characters (2 rows tall)
+    let logo_style = Style::default().fg(Color::White);
+    let version_style = Style::default().fg(Color::DarkGray);
+
     let info_lines = vec![
-        // Title line: dvaar (bold white) + version (grey in brackets)
+        // Logo row 1
         Line::from(vec![
-            Span::styled("dvaar ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("(v{})", app.tunnel_info.version), Style::default().fg(Color::DarkGray)),
+            Span::styled("█▀▄ █ █ ▄▀█ ▄▀█ █▀█", logo_style),
+            Span::styled(format!("  v{}", app.tunnel_info.version), version_style),
         ]),
-        // Empty line after title
+        // Logo row 2
+        Line::from(Span::styled("█▄▀ ▀▄▀ █▀█ █▀█ █▀▄", logo_style)),
+        // Empty line after logo
         Line::from(""),
-        // Sponsor line with "Sponsored by:" prefix, underlined link
+        // Sponsor line with "Sponsored by:" prefix, only title is underlined
         Line::from(vec![
             Span::styled("Sponsored by: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(&sponsor_text, Style::default().fg(Color::Yellow).add_modifier(Modifier::UNDERLINED)),
+            Span::styled(&sponsor_title, Style::default().fg(Color::Yellow).add_modifier(Modifier::UNDERLINED)),
+            Span::styled(" - ", Style::default().fg(Color::DarkGray)),
+            Span::styled(&sponsor_desc, Style::default().fg(Color::Yellow)),
         ]),
         // Empty line after sponsor
         Line::from(""),
@@ -168,6 +174,23 @@ fn draw_unified_header(frame: &mut Frame, app: &TuiApp, area: Rect) {
             Span::styled("Inspector   ", Style::default().fg(Color::DarkGray)),
             Span::styled(&inspector_str, Style::default().fg(Color::Magenta).add_modifier(Modifier::UNDERLINED)),
         ]),
+        // Empty line before connections
+        Line::from(""),
+        // Connections line
+        {
+            let m = &app.metrics;
+            Line::from(vec![
+                Span::styled("Connections ", Style::default().fg(Color::DarkGray)),
+                Span::styled("ttl ", Style::default().fg(Color::DarkGray)),
+                Span::styled(format!("{:<4}", m.total_requests), Style::default().fg(Color::White)),
+                Span::styled(" opn ", Style::default().fg(Color::DarkGray)),
+                Span::styled(format!("{:<4}", m.open_connections), Style::default().fg(Color::Green)),
+                Span::styled(" rt1 ", Style::default().fg(Color::DarkGray)),
+                Span::styled(format!("{:<6.2}", m.requests_per_minute_1m), Style::default().fg(Color::White)),
+                Span::styled(" rt5 ", Style::default().fg(Color::DarkGray)),
+                Span::styled(format!("{:<6.2}", m.requests_per_minute_5m), Style::default().fg(Color::White)),
+            ])
+        },
     ];
 
     let info_paragraph = Paragraph::new(info_lines);
@@ -212,46 +235,6 @@ fn draw_unified_header(frame: &mut Frame, app: &TuiApp, area: Rect) {
             height: qr_rect.height,
         });
     }
-}
-
-/// Draw the metrics row (compact, responsive) - format: Connections ttl opn rt1 rt5 p50 p90
-fn draw_metrics_row(frame: &mut Frame, app: &TuiApp, area: Rect) {
-    let m = &app.metrics;
-    let width = area.width as usize;
-
-    // Build a fixed-width formatted string to prevent rendering issues
-    let mut line = format!(
-        "Connections  ttl {:<5} opn {:<5}",
-        m.total_requests,
-        m.open_connections
-    );
-
-    // Add rate columns if we have space (width > 50)
-    if width > 50 {
-        line.push_str(&format!(
-            " rt1 {:<7.2} rt5 {:<7.2}",
-            m.requests_per_minute_1m,
-            m.requests_per_minute_5m
-        ));
-    }
-
-    // Add percentiles if we have more space (width > 80)
-    if width > 80 {
-        line.push_str(&format!(
-            " p50 {:<7.2} p90 {:<7.2}",
-            m.p50_duration_ms as f64,
-            m.p90_duration_ms as f64
-        ));
-    }
-
-    // Pad to full width to clear any previous content
-    let padded = format!("{:<width$}", line, width = width);
-
-    let paragraph = Paragraph::new(Line::from(Span::styled(
-        padded,
-        Style::default().fg(Color::DarkGray),
-    )));
-    frame.render_widget(paragraph, area);
 }
 
 /// Draw recent requests (last 10) - responsive layout
