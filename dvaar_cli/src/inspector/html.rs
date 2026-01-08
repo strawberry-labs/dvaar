@@ -26,8 +26,16 @@ pub const INSPECTOR_HTML: &str = r#"<!DOCTYPE html>
             padding-bottom: 1rem;
             border-bottom: 1px solid #222;
         }
+        .header-left { display: flex; align-items: center; gap: 1rem; }
         h1 { font-size: 1.25rem; font-weight: 600; }
-        h1 span { color: #888; font-weight: 400; margin-left: 0.5rem; }
+        .online-badge {
+            background: #14532d;
+            color: #4ade80;
+            font-size: 0.75rem;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-weight: 600;
+        }
         .controls { display: flex; gap: 0.5rem; align-items: center; }
         .status {
             display: flex;
@@ -43,6 +51,32 @@ pub const INSPECTOR_HTML: &str = r#"<!DOCTYPE html>
             background: #ef4444;
         }
         .status-dot.connected { background: #22c55e; }
+
+        /* Navigation Tabs */
+        .nav-tabs {
+            display: flex;
+            gap: 0;
+            margin-bottom: 1.5rem;
+            border-bottom: 1px solid #333;
+        }
+        .nav-tab {
+            background: transparent;
+            border: none;
+            border-bottom: 2px solid transparent;
+            color: #888;
+            padding: 0.75rem 1.5rem;
+            cursor: pointer;
+            font-size: 0.9rem;
+            font-weight: 500;
+            transition: color 0.2s;
+        }
+        .nav-tab:hover { color: #e0e0e0; }
+        .nav-tab.active {
+            color: #e0e0e0;
+            border-bottom-color: #2563eb;
+        }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
 
         button {
             background: #1a1a1a;
@@ -223,6 +257,97 @@ pub const INSPECTOR_HTML: &str = r#"<!DOCTYPE html>
         }
         .empty-state p { margin-bottom: 0.5rem; }
 
+        /* Status Page Styles */
+        .status-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 2rem;
+        }
+        @media (max-width: 900px) {
+            .status-grid { grid-template-columns: 1fr; }
+        }
+        .status-section {
+            background: #111;
+            border: 1px solid #222;
+            border-radius: 8px;
+            padding: 1.5rem;
+        }
+        .status-section h3 {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 1.25rem;
+            color: #e0e0e0;
+        }
+        .status-section h4 {
+            font-size: 0.9rem;
+            font-weight: 600;
+            margin-top: 1.5rem;
+            margin-bottom: 0.75rem;
+            color: #888;
+        }
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 0.6rem 0;
+            border-bottom: 1px solid #1a1a1a;
+        }
+        .info-row:last-child { border-bottom: none; }
+        .info-label {
+            color: #888;
+            font-weight: 500;
+        }
+        .info-value {
+            color: #e0e0e0;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 0.875rem;
+        }
+        .info-value a {
+            color: #60a5fa;
+            text-decoration: none;
+        }
+        .info-value a:hover { text-decoration: underline; }
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 1rem;
+        }
+        .metric {
+            background: #1a1a1a;
+            border-radius: 6px;
+            padding: 1rem;
+            text-align: center;
+        }
+        .metric-value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: #e0e0e0;
+            display: block;
+        }
+        .metric-label {
+            font-size: 0.75rem;
+            color: #888;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .metrics-table {
+            width: 100%;
+            font-size: 0.875rem;
+            border-collapse: collapse;
+        }
+        .metrics-table th {
+            text-align: left;
+            padding: 0.5rem;
+            color: #666;
+            font-weight: 500;
+            border-bottom: 1px solid #222;
+        }
+        .metrics-table td {
+            padding: 0.5rem;
+            color: #e0e0e0;
+            font-family: 'Monaco', 'Menlo', monospace;
+        }
+        .metrics-table tr:hover td { background: #1a1a1a; }
+
         /* Scrollbar */
         ::-webkit-scrollbar { width: 8px; height: 8px; }
         ::-webkit-scrollbar-track { background: #0a0a0a; }
@@ -231,37 +356,147 @@ pub const INSPECTOR_HTML: &str = r#"<!DOCTYPE html>
 
         /* Time column */
         .time { color: #666; font-size: 0.8125rem; }
+
+        /* Inspect tab header */
+        .inspect-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+        .inspect-header h2 {
+            font-size: 1rem;
+            font-weight: 500;
+            color: #888;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <header>
-            <h1>Dvaar Inspector<span id="request-count">0 requests</span></h1>
+            <div class="header-left">
+                <h1>dvaar</h1>
+                <span class="online-badge" id="online-badge">online</span>
+            </div>
             <div class="controls">
                 <div class="status">
                     <div class="status-dot" id="status-dot"></div>
                     <span id="status-text">Disconnected</span>
                 </div>
-                <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.875rem; color: #888;">
-                    <input type="checkbox" id="auto-scroll" checked> Auto-scroll
-                </label>
-                <button onclick="clearRequests()" class="danger">Clear</button>
             </div>
         </header>
 
-        <div class="request-list" id="request-list">
-            <div class="request-header">
-                <div>Method</div>
-                <div>Path</div>
-                <div>Status</div>
-                <div>Time</div>
-                <div>Size</div>
-                <div>Actions</div>
+        <!-- Navigation Tabs -->
+        <nav class="nav-tabs">
+            <button class="nav-tab active" data-tab="inspect" onclick="switchTab('inspect')">Inspect</button>
+            <button class="nav-tab" data-tab="status" onclick="switchTab('status')">Status</button>
+        </nav>
+
+        <!-- Inspect Tab -->
+        <div class="tab-content active" id="tab-inspect">
+            <div class="inspect-header">
+                <h2 id="request-count">0 requests</h2>
+                <div style="display: flex; gap: 0.5rem; align-items: center;">
+                    <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.875rem; color: #888;">
+                        <input type="checkbox" id="auto-scroll" checked> Auto-scroll
+                    </label>
+                    <button onclick="clearRequests()" class="danger">Clear</button>
+                </div>
             </div>
-            <div id="requests-container">
-                <div class="empty-state" id="empty-state">
-                    <p>No requests captured yet</p>
-                    <p style="font-size: 0.875rem;">Requests through your tunnel will appear here</p>
+
+            <div class="request-list" id="request-list">
+                <div class="request-header">
+                    <div>Method</div>
+                    <div>Path</div>
+                    <div>Status</div>
+                    <div>Time</div>
+                    <div>Size</div>
+                    <div>Actions</div>
+                </div>
+                <div id="requests-container">
+                    <div class="empty-state" id="empty-state">
+                        <p>No requests captured yet</p>
+                        <p style="font-size: 0.875rem;">Requests through your tunnel will appear here</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Status Tab -->
+        <div class="tab-content" id="tab-status">
+            <div class="status-grid">
+                <!-- Tunnel Info Section -->
+                <div class="status-section">
+                    <h3>Tunnel Info</h3>
+                    <div class="info-row">
+                        <span class="info-label">Public URL</span>
+                        <span class="info-value" id="tunnel-url">-</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Local Address</span>
+                        <span class="info-value" id="local-addr">-</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Protocol</span>
+                        <span class="info-value">HTTP/HTTPS</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Inspector</span>
+                        <span class="info-value" id="inspector-addr">-</span>
+                    </div>
+                </div>
+
+                <!-- Metrics Section -->
+                <div class="status-section">
+                    <h3>Metrics</h3>
+                    <div class="metrics-grid">
+                        <div class="metric">
+                            <span class="metric-value" id="total-requests">0</span>
+                            <span class="metric-label">Total Requests</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-value" id="open-connections">0</span>
+                            <span class="metric-label">Open Connections</span>
+                        </div>
+                    </div>
+
+                    <h4>Request Rate</h4>
+                    <table class="metrics-table">
+                        <thead>
+                            <tr>
+                                <th>1 min</th>
+                                <th>5 min</th>
+                                <th>15 min</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td id="rate-1m">0.00</td>
+                                <td id="rate-5m">0.00</td>
+                                <td id="rate-15m">0.00</td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <h4>Response Time Percentiles</h4>
+                    <table class="metrics-table">
+                        <thead>
+                            <tr>
+                                <th>p50</th>
+                                <th>p90</th>
+                                <th>p95</th>
+                                <th>p99</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td id="p50">0ms</td>
+                                <td id="p90">0ms</td>
+                                <td id="p95">0ms</td>
+                                <td id="p99">0ms</td>
+                            </tr>
+                        </tbody>
+                    </table>
                 </div>
             </div>
         </div>
@@ -271,6 +506,65 @@ pub const INSPECTOR_HTML: &str = r#"<!DOCTYPE html>
         let requests = [];
         let ws = null;
         let expandedId = null;
+        let currentTab = 'inspect';
+        let metricsInterval = null;
+
+        function switchTab(tab) {
+            currentTab = tab;
+            document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            document.querySelector(`[data-tab="${tab}"]`).classList.add('active');
+            document.getElementById(`tab-${tab}`).classList.add('active');
+
+            // Start/stop metrics polling based on active tab
+            if (tab === 'status') {
+                fetchTunnelInfo();
+                fetchMetrics();
+                if (!metricsInterval) {
+                    metricsInterval = setInterval(fetchMetrics, 2000);
+                }
+            } else if (metricsInterval) {
+                clearInterval(metricsInterval);
+                metricsInterval = null;
+            }
+        }
+
+        async function fetchTunnelInfo() {
+            try {
+                const res = await fetch('/api/info');
+                const info = await res.json();
+
+                const tunnelUrlEl = document.getElementById('tunnel-url');
+                if (info.public_url) {
+                    tunnelUrlEl.innerHTML = `<a href="${info.public_url}" target="_blank">${info.public_url}</a>`;
+                } else {
+                    tunnelUrlEl.textContent = '-';
+                }
+
+                document.getElementById('local-addr').textContent = info.local_addr || '-';
+            } catch (e) {
+                console.error('Failed to fetch tunnel info:', e);
+            }
+        }
+
+        async function fetchMetrics() {
+            try {
+                const res = await fetch('/api/metrics');
+                const metrics = await res.json();
+
+                document.getElementById('total-requests').textContent = metrics.total_requests;
+                document.getElementById('open-connections').textContent = metrics.open_connections;
+                document.getElementById('rate-1m').textContent = metrics.requests_per_minute_1m.toFixed(2);
+                document.getElementById('rate-5m').textContent = metrics.requests_per_minute_5m.toFixed(2);
+                document.getElementById('rate-15m').textContent = metrics.requests_per_minute_15m.toFixed(2);
+                document.getElementById('p50').textContent = metrics.p50_duration_ms + 'ms';
+                document.getElementById('p90').textContent = metrics.p90_duration_ms + 'ms';
+                document.getElementById('p95').textContent = metrics.p95_duration_ms + 'ms';
+                document.getElementById('p99').textContent = metrics.p99_duration_ms + 'ms';
+            } catch (e) {
+                console.error('Failed to fetch metrics:', e);
+            }
+        }
 
         function connect() {
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -279,11 +573,18 @@ pub const INSPECTOR_HTML: &str = r#"<!DOCTYPE html>
             ws.onopen = () => {
                 document.getElementById('status-dot').classList.add('connected');
                 document.getElementById('status-text').textContent = 'Connected';
+                document.getElementById('online-badge').textContent = 'online';
+                document.getElementById('online-badge').style.background = '#14532d';
+
+                // Set inspector address
+                document.getElementById('inspector-addr').textContent = window.location.host;
             };
 
             ws.onclose = () => {
                 document.getElementById('status-dot').classList.remove('connected');
                 document.getElementById('status-text').textContent = 'Disconnected';
+                document.getElementById('online-badge').textContent = 'offline';
+                document.getElementById('online-badge').style.background = '#7f1d1d';
                 setTimeout(connect, 2000);
             };
 
@@ -295,18 +596,20 @@ pub const INSPECTOR_HTML: &str = r#"<!DOCTYPE html>
                 const msg = JSON.parse(event.data);
                 if (msg.type === 'requests') {
                     requests = msg.data;
-                    renderRequests();
+                    requestAnimationFrame(() => renderRequests());
                 } else if (msg.type === 'request') {
                     requests.push(msg.data);
                     if (requests.length > 50) requests.shift();
-                    renderRequests();
-                    if (document.getElementById('auto-scroll').checked) {
-                        const container = document.getElementById('requests-container');
-                        container.scrollTop = container.scrollHeight;
-                    }
+                    requestAnimationFrame(() => {
+                        renderRequests();
+                        if (document.getElementById('auto-scroll').checked) {
+                            const container = document.getElementById('requests-container');
+                            container.scrollTop = container.scrollHeight;
+                        }
+                    });
                 } else if (msg.type === 'clear') {
                     requests = [];
-                    renderRequests();
+                    requestAnimationFrame(() => renderRequests());
                 }
             };
         }

@@ -1,15 +1,23 @@
 //! WebSocket tunnel client with streaming and WebSocket passthrough support
 
 use crate::inspector::{CapturedRequest, RequestStore};
+use crate::tui::{TuiApp, TuiEvent, TunnelInfo, TunnelStatus};
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use chrono::Utc;
 use console::style;
+use crossterm::{
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
 use dvaar_common::{
     constants, ClientHello, ControlPacket, HttpRequestPacket, HttpResponsePacket, TunnelType,
 };
 use futures_util::{SinkExt, StreamExt};
+use ratatui::{backend::CrosstermBackend, Terminal};
 use std::collections::HashMap;
+use std::io;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
@@ -88,7 +96,16 @@ impl TunnelClient {
     }
 
     /// Run the tunnel client
-    pub async fn run(&mut self, inspect_port: Option<u16>) -> Result<()> {
+    pub async fn run(&mut self, inspect_port: Option<u16>, tui_mode: bool) -> Result<()> {
+        if tui_mode {
+            self.run_with_tui(inspect_port).await
+        } else {
+            self.run_simple(inspect_port).await
+        }
+    }
+
+    /// Run with simple CLI output (original behavior)
+    async fn run_simple(&mut self, inspect_port: Option<u16>) -> Result<()> {
         use cliclack::{intro, note, outro_cancel};
 
         let url = format!("{}/_dvaar/tunnel", self.server_url);
@@ -98,9 +115,11 @@ impl TunnelClient {
         let spinner = cliclack::spinner();
         spinner.start("Connecting to tunnel server...");
 
+        let start_time = Instant::now();
         let (ws_stream, _) = connect_async(&url)
             .await
             .context("Failed to connect to tunnel server")?;
+        let latency_ms = start_time.elapsed().as_millis() as u64;
 
         spinner.stop("Connected to server");
 
@@ -145,6 +164,11 @@ impl TunnelClient {
         let public_url = format!("https://{}", server_hello.assigned_domain);
         let upstream_url = self.format_upstream();
 
+        // Set tunnel info in inspector store for status page
+        if let Some(ref store) = self.inspector {
+            store.set_tunnel_info(public_url.clone(), upstream_url.clone()).await;
+        }
+
         let mut tunnel_info = format!(
             "{} {} {}\n{} {} {}",
             style("Public URL:").dim(),
@@ -166,6 +190,13 @@ impl TunnelClient {
             ));
         }
 
+        // Add latency info
+        tunnel_info.push_str(&format!(
+            "\n{} {}",
+            style("Latency:").dim(),
+            style(format!("{}ms", latency_ms)).white(),
+        ));
+
         note("Tunnel Active", &tunnel_info)?;
 
         // Display QR code
@@ -180,7 +211,347 @@ impl TunnelClient {
         println!();
 
         // Start bidirectional communication
-        self.handle_tunnel(write, read).await
+        self.handle_tunnel(write, read, None).await
+    }
+
+    /// Run with full TUI
+    async fn run_with_tui(&mut self, inspect_port: Option<u16>) -> Result<()> {
+        let url = format!("{}/_dvaar/tunnel", self.server_url);
+
+        // Measure connection latency
+        let start_time = Instant::now();
+        let (ws_stream, _) = connect_async(&url)
+            .await
+            .context("Failed to connect to tunnel server")?;
+        let latency_ms = start_time.elapsed().as_millis() as u64;
+
+        let (mut write, mut read) = ws_stream.split();
+
+        // Send Init packet
+        let init = ClientHello {
+            token: self.token.clone(),
+            requested_subdomain: self.requested_subdomain.clone(),
+            tunnel_type: TunnelType::Http,
+            client_version: env!("CARGO_PKG_VERSION").to_string(),
+        };
+
+        let init_packet = ControlPacket::Init(init);
+        let init_bytes = init_packet.to_bytes()?;
+        write.send(Message::Binary(init_bytes.into())).await?;
+
+        // Wait for InitAck
+        let ack_msg = tokio::time::timeout(Duration::from_secs(10), read.next())
+            .await
+            .context("Timeout waiting for server response")?
+            .ok_or_else(|| anyhow::anyhow!("Connection closed before response"))?
+            .context("WebSocket error")?;
+
+        let ack_data = match ack_msg {
+            Message::Binary(data) => data,
+            _ => anyhow::bail!("Unexpected message type from server"),
+        };
+
+        let ack_packet = ControlPacket::from_bytes(&ack_data)?;
+        let server_hello = match ack_packet {
+            ControlPacket::InitAck(hello) => hello,
+            _ => anyhow::bail!("Expected InitAck packet"),
+        };
+
+        if let Some(error) = server_hello.error {
+            anyhow::bail!("Server error: {}", error);
+        }
+
+        let public_url = format!("https://{}", server_hello.assigned_domain);
+        let local_addr = self.format_upstream();
+        let inspector_url = inspect_port.map(|p| format!("http://localhost:{}", p));
+
+        // Set tunnel info in inspector store for status page
+        if let Some(ref store) = self.inspector {
+            store.set_tunnel_info(public_url.clone(), local_addr.clone()).await;
+        }
+
+        // Create TUI app
+        let tunnel_info = TunnelInfo {
+            public_url,
+            local_addr,
+            inspector_url,
+            status: TunnelStatus::Online,
+            user_email: None, // TODO: Get from server when available
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            latency_ms: Some(latency_ms),
+        };
+
+        // Setup terminal
+        enable_raw_mode()?;
+        let mut stdout = io::stdout();
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+        let backend = CrosstermBackend::new(stdout);
+        let mut terminal = Terminal::new(backend)?;
+
+        // Create channel for TUI events
+        let (tui_tx, tui_rx) = mpsc::channel::<TuiEvent>(100);
+
+        let mut app = TuiApp::new(tunnel_info);
+
+        // Run event loop
+        let result = self
+            .run_tui_loop(&mut terminal, &mut app, write, read, tui_tx, tui_rx)
+            .await;
+
+        // Restore terminal
+        disable_raw_mode()?;
+        execute!(
+            terminal.backend_mut(),
+            LeaveAlternateScreen,
+            DisableMouseCapture
+        )?;
+        terminal.show_cursor()?;
+
+        result
+    }
+
+    async fn run_tui_loop(
+        &self,
+        terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+        app: &mut TuiApp,
+        write: futures_util::stream::SplitSink<
+            WebSocketStream<MaybeTlsStream<TcpStream>>,
+            Message,
+        >,
+        mut read: futures_util::stream::SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
+        tui_tx: mpsc::Sender<TuiEvent>,
+        mut tui_rx: mpsc::Receiver<TuiEvent>,
+    ) -> Result<()> {
+        let write = Arc::new(Mutex::new(write));
+        let (packet_tx, mut packet_rx) = mpsc::channel::<ControlPacket>(100);
+
+        // Active request body receivers
+        let body_receivers: Arc<Mutex<HashMap<String, RequestBodyState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        // Active WebSocket connections
+        let websockets: Arc<Mutex<HashMap<String, LocalWebSocket>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        // HTTP client for upstream requests
+        let http_client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(300))
+            .pool_max_idle_per_host(10)
+            .build()?;
+
+        let upstream_addr = self.upstream_addr.clone();
+        let upstream_tls = self.upstream_tls;
+        let basic_auth = self.basic_auth.clone();
+        let host_header = self.host_header.clone();
+        let inspector = self.inspector.clone();
+
+        // Metrics update interval
+        let mut metrics_interval = tokio::time::interval(Duration::from_secs(1));
+        let mut tick_interval = tokio::time::interval(Duration::from_millis(100));
+        let mut ping_interval = tokio::time::interval(Duration::from_secs(constants::WS_PING_INTERVAL_SECONDS));
+
+        loop {
+            // Draw UI
+            terminal.draw(|f| crate::tui::draw(f, app))?;
+
+            tokio::select! {
+                // Handle keyboard events (non-blocking)
+                _ = tick_interval.tick() => {
+                    if event::poll(Duration::from_millis(0))? {
+                        if let Event::Key(key) = event::read()? {
+                            app.handle_event(TuiEvent::Key(key));
+                            if app.should_quit {
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+
+                // Handle WebSocket messages from server
+                msg = read.next() => {
+                    match msg {
+                        Some(Ok(Message::Binary(data))) => {
+                            match ControlPacket::from_bytes(&data) {
+                                Ok(packet) => {
+                                    match packet {
+                                        ControlPacket::HttpRequest(request) => {
+                                            let packet_tx = packet_tx.clone();
+                                            let upstream_addr = upstream_addr.clone();
+                                            let basic_auth = basic_auth.clone();
+                                            let host_header = host_header.clone();
+                                            let body_receivers = body_receivers.clone();
+                                            let websockets = websockets.clone();
+                                            let http_client = http_client.clone();
+                                            let inspector = inspector.clone();
+                                            let tui_tx = tui_tx.clone();
+
+                                            tokio::spawn(async move {
+                                                Self::handle_request_with_tui(
+                                                    request,
+                                                    upstream_addr,
+                                                    upstream_tls,
+                                                    basic_auth.as_deref(),
+                                                    host_header.as_deref(),
+                                                    packet_tx,
+                                                    websockets,
+                                                    inspector,
+                                                    http_client,
+                                                    body_receivers,
+                                                    tui_tx,
+                                                )
+                                                .await;
+                                            });
+                                        }
+                                        ControlPacket::Data { stream_id, data } => {
+                                            let mut receivers = body_receivers.lock().await;
+                                            if let Some(state) = receivers.get_mut(&stream_id) {
+                                                state.last_activity = Instant::now();
+                                                let _ = state.sender.send(data).await;
+                                            }
+                                        }
+                                        ControlPacket::End { stream_id } => {
+                                            body_receivers.lock().await.remove(&stream_id);
+                                        }
+                                        ControlPacket::Ping => {
+                                            let _ = packet_tx.send(ControlPacket::Pong).await;
+                                        }
+                                        ControlPacket::Pong => {
+                                            // Server responded to our ping
+                                        }
+                                        ControlPacket::WebSocketFrame { stream_id, data, is_binary } => {
+                                            let ws_sender = {
+                                                let ws_map = websockets.lock().await;
+                                                ws_map.get(&stream_id).map(|ws| ws.write.clone())
+                                            };
+
+                                            if let Some(ws_sender) = ws_sender {
+                                                let msg = if is_binary {
+                                                    Message::Binary(data.into())
+                                                } else {
+                                                    Message::Text(String::from_utf8_lossy(&data).to_string().into())
+                                                };
+
+                                                let mut ws_sender = ws_sender.lock().await;
+                                                if ws_sender.send(msg).await.is_err() {
+                                                    websockets.lock().await.remove(&stream_id);
+                                                    let _ = packet_tx.send(ControlPacket::WebSocketClose {
+                                                        stream_id,
+                                                        code: Some(1006),
+                                                        reason: Some("Local connection closed".to_string()),
+                                                    }).await;
+                                                }
+                                            }
+                                        }
+                                        ControlPacket::WebSocketClose { stream_id, .. } => {
+                                            let ws_sender = {
+                                                let ws_map = websockets.lock().await;
+                                                ws_map.get(&stream_id).map(|ws| ws.write.clone())
+                                            };
+                                            if let Some(ws_sender) = ws_sender {
+                                                let mut ws_sender = ws_sender.lock().await;
+                                                let _ = ws_sender.send(Message::Close(None)).await;
+                                            }
+                                            websockets.lock().await.remove(&stream_id);
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!("Failed to parse packet: {}", e);
+                                }
+                            }
+                        }
+                        Some(Ok(Message::Ping(_))) => {}
+                        Some(Ok(Message::Pong(_))) => {}
+                        Some(Ok(Message::Close(_))) => {
+                            app.tunnel_info.status = TunnelStatus::Offline;
+                            return Ok(());
+                        }
+                        Some(Err(e)) => {
+                            tracing::error!("WebSocket error: {}", e);
+                            app.tunnel_info.status = TunnelStatus::Offline;
+                            return Err(e.into());
+                        }
+                        None => {
+                            app.tunnel_info.status = TunnelStatus::Offline;
+                            return Ok(());
+                        }
+                        _ => {}
+                    }
+                }
+
+                // Send packets back to server
+                Some(packet) = packet_rx.recv() => {
+                    let bytes = packet.to_bytes()?;
+                    let mut write = write.lock().await;
+                    write.send(Message::Binary(bytes.into())).await?;
+                }
+
+                // Update metrics periodically
+                _ = metrics_interval.tick() => {
+                    if let Some(ref store) = self.inspector {
+                        let metrics = store.get_metrics().await;
+                        app.update_metrics(metrics);
+                    }
+                }
+
+                // Send ping to keep connection alive
+                _ = ping_interval.tick() => {
+                    let _ = packet_tx.send(ControlPacket::Ping).await;
+                }
+
+                // Handle TUI events from request handlers
+                Some(event) = tui_rx.recv() => {
+                    app.handle_event(event);
+                }
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_request_with_tui(
+        request: HttpRequestPacket,
+        upstream_addr: String,
+        upstream_tls: bool,
+        basic_auth: Option<&str>,
+        host_header: Option<&str>,
+        packet_tx: mpsc::Sender<ControlPacket>,
+        websockets: Arc<Mutex<HashMap<String, LocalWebSocket>>>,
+        inspector: Option<Arc<RequestStore>>,
+        http_client: reqwest::Client,
+        body_receivers: Arc<Mutex<HashMap<String, RequestBodyState>>>,
+        tui_tx: mpsc::Sender<TuiEvent>,
+    ) {
+        // Create body channel for this request
+        let (body_tx, body_rx) = mpsc::channel::<Vec<u8>>(100);
+
+        // Register the body receiver
+        {
+            let mut receivers = body_receivers.lock().await;
+            receivers.insert(
+                request.stream_id.clone(),
+                RequestBodyState {
+                    sender: body_tx,
+                    last_activity: Instant::now(),
+                },
+            );
+        }
+
+        // Handle the request
+        Self::handle_request(
+            request,
+            body_rx,
+            http_client,
+            &upstream_addr,
+            upstream_tls,
+            basic_auth,
+            host_header,
+            packet_tx,
+            websockets,
+            inspector,
+            Some(tui_tx),
+        )
+        .await;
     }
 
     fn format_upstream(&self) -> String {
@@ -195,6 +566,7 @@ impl TunnelClient {
             Message,
         >,
         mut read: futures_util::stream::SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
+        _tui_tx: Option<mpsc::Sender<TuiEvent>>,
     ) -> Result<()> {
         let write = Arc::new(Mutex::new(write));
 
@@ -323,6 +695,7 @@ impl TunnelClient {
                                     packet_tx,
                                     websockets,
                                     inspector,
+                                    None, // No TUI in simple mode
                                 )
                                 .await;
                             });
@@ -439,6 +812,7 @@ impl TunnelClient {
         packet_tx: mpsc::Sender<ControlPacket>,
         websockets: Arc<Mutex<HashMap<String, LocalWebSocket>>>,
         inspector: Option<Arc<RequestStore>>,
+        tui_tx: Option<mpsc::Sender<TuiEvent>>,
     ) {
         let start_time = Instant::now();
         let stream_id = request.stream_id.clone();
@@ -457,6 +831,11 @@ impl TunnelClient {
             )
             .await;
             return;
+        }
+
+        // Increment open connections count
+        if let Some(ref store) = inspector {
+            store.metrics().increment_connections().await;
         }
 
         // Store request headers for inspector
@@ -524,6 +903,10 @@ impl TunnelClient {
                     })
                     .await;
                 let _ = packet_tx.send(ControlPacket::End { stream_id }).await;
+                // Decrement connection count before early return
+                if let Some(ref store) = inspector {
+                    store.metrics().decrement_connections().await;
+                }
                 return;
             }
         }
@@ -578,6 +961,9 @@ impl TunnelClient {
                     .await
                     .is_err()
                 {
+                    if let Some(ref store) = inspector {
+                        store.metrics().decrement_connections().await;
+                    }
                     return;
                 }
 
@@ -606,6 +992,9 @@ impl TunnelClient {
                                     .await
                                     .is_err()
                                 {
+                                    if let Some(ref store) = inspector {
+                                        store.metrics().decrement_connections().await;
+                                    }
                                     return;
                                 }
                             }
@@ -618,6 +1007,9 @@ impl TunnelClient {
                                     error: e.to_string(),
                                 })
                                 .await;
+                            if let Some(ref store) = inspector {
+                                store.metrics().decrement_connections().await;
+                            }
                             return;
                         }
                     }
@@ -629,8 +1021,8 @@ impl TunnelClient {
                 let elapsed = start_time.elapsed();
                 Self::log_request(&method, &uri, status, elapsed, total_bytes);
 
-                // Store captured request in inspector
-                if let Some(store) = inspector {
+                // Store captured request in inspector and emit to TUI
+                if let Some(store) = &inspector {
                     let captured = CapturedRequest {
                         id: stream_id,
                         timestamp: Utc::now(),
@@ -644,7 +1036,13 @@ impl TunnelClient {
                         duration_ms: elapsed.as_millis() as u64,
                         size_bytes: total_bytes,
                     };
+                    // Emit to TUI
+                    if let Some(ref tx) = tui_tx {
+                        let _ = tx.send(TuiEvent::NewRequest(captured.clone())).await;
+                    }
                     store.add_request(captured).await;
+                    // Decrement connection count
+                    store.metrics().decrement_connections().await;
                 }
             }
             Err(e) => {
@@ -670,8 +1068,8 @@ impl TunnelClient {
                 let elapsed = start_time.elapsed();
                 Self::log_request(&method, &uri, 502, elapsed, 0);
 
-                // Store failed request in inspector
-                if let Some(store) = inspector {
+                // Store failed request in inspector and emit to TUI
+                if let Some(store) = &inspector {
                     let captured = CapturedRequest {
                         id: stream_id,
                         timestamp: Utc::now(),
@@ -685,7 +1083,13 @@ impl TunnelClient {
                         duration_ms: elapsed.as_millis() as u64,
                         size_bytes: 0,
                     };
+                    // Emit to TUI
+                    if let Some(ref tx) = tui_tx {
+                        let _ = tx.send(TuiEvent::NewRequest(captured.clone())).await;
+                    }
                     store.add_request(captured).await;
+                    // Decrement connection count
+                    store.metrics().decrement_connections().await;
                 }
             }
         }

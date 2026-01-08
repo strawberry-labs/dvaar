@@ -87,6 +87,27 @@ jobs:
             cd /opt/dvaar
             docker compose pull
             docker compose up -d --remove-orphans
+
+            # Wait for dvaar-server container to be running (max 60s)
+            echo "Waiting for dvaar-server to start..."
+            RETRIES=12
+            DELAY=5
+            for i in $(seq 1 $RETRIES); do
+              if docker ps --filter name=dvaar-server --filter status=running --format '{{.Names}}' | grep -q dvaar-server; then
+                echo "dvaar-server is running!"
+                break
+              fi
+              echo "Attempt $i/$RETRIES - waiting ${DELAY}s..."
+              sleep $DELAY
+            done
+
+            # Final verification
+            if ! docker ps --filter name=dvaar-server --filter status=running --format '{{.Names}}' | grep -q dvaar-server; then
+              echo "ERROR: dvaar-server container is not running!"
+              docker logs dvaar-server --tail 50 2>/dev/null || echo "No logs available"
+              exit 1
+            fi
+
             docker system prune -f || true
 
   deploy-edge-nodes:
@@ -110,4 +131,25 @@ jobs:
             cd /opt/dvaar
             docker compose pull
             docker compose up -d dvaar caddy
+
+            # Wait for dvaar-server container to be running (max 60s)
+            echo "Waiting for dvaar-server to start..."
+            RETRIES=12
+            DELAY=5
+            for i in $(seq 1 $RETRIES); do
+              if docker ps --filter name=dvaar-server --filter status=running --format '{{.Names}}' | grep -q dvaar-server; then
+                echo "dvaar-server is running!"
+                break
+              fi
+              echo "Attempt $i/$RETRIES - waiting ${DELAY}s..."
+              sleep $DELAY
+            done
+
+            # Final verification
+            if ! docker ps --filter name=dvaar-server --filter status=running --format '{{.Names}}' | grep -q dvaar-server; then
+              echo "ERROR: dvaar-server container is not running!"
+              docker logs dvaar-server --tail 50 2>/dev/null || echo "No logs available"
+              exit 1
+            fi
+
             docker system prune -f || true

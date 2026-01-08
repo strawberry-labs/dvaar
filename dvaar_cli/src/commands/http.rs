@@ -21,6 +21,7 @@ pub struct HttpOptions {
     pub detach: bool,
     pub use_tls: bool,
     pub inspect_port: Option<u16>,
+    pub tui_mode: bool,
 }
 
 /// Handle HTTP tunnel command
@@ -85,11 +86,16 @@ pub async fn run(opts: HttpOptions) -> Result<()> {
         client.set_inspector(store);
     }
 
-    // Run the tunnel (this now uses cliclack internally)
-    let result = client.run(opts.inspect_port).await;
+    // Run the tunnel
+    let result = client.run(opts.inspect_port, opts.tui_mode).await;
 
     if let Err(e) = result {
-        cliclack::outro_cancel(format!("Tunnel error: {}", e))?;
+        if opts.tui_mode {
+            // TUI will have restored terminal, just print error
+            eprintln!("Tunnel error: {}", e);
+        } else {
+            cliclack::outro_cancel(format!("Tunnel error: {}", e))?;
+        }
     }
 
     Ok(())
@@ -160,8 +166,8 @@ async fn spawn_background(opts: HttpOptions) -> Result<()> {
     let session_id = generate_session_id();
     let log_file = logs_dir().join(format!("{}.log", session_id));
 
-    // Build command args (without -d flag)
-    let mut args = vec!["http".to_string(), opts.target.clone()];
+    // Build command args (without -d flag, with --no-tui for background mode)
+    let mut args = vec!["http".to_string(), opts.target.clone(), "--no-tui".to_string()];
 
     if let Some(subdomain) = &opts.subdomain {
         args.push("--subdomain".to_string());

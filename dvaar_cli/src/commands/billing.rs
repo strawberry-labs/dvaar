@@ -70,7 +70,7 @@ pub async fn usage() -> Result<()> {
 
 /// Upgrade to a paid plan
 pub async fn upgrade(plan: Option<String>) -> Result<()> {
-    use cliclack::{intro, outro, outro_cancel, log, note};
+    use cliclack::{intro, outro, outro_cancel, log};
 
     let config = Config::load()?;
     let token = config.require_auth()?;

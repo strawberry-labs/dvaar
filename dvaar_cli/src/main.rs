@@ -12,6 +12,8 @@
 mod commands;
 mod config;
 mod inspector;
+mod metrics;
+mod tui;
 mod tunnel;
 mod update;
 
@@ -73,6 +75,10 @@ enum Commands {
         /// Disable local web inspector
         #[arg(long)]
         no_inspect: bool,
+
+        /// Disable TUI mode (use simple text output)
+        #[arg(long)]
+        no_tui: bool,
     },
 
     /// List active tunnels
@@ -153,6 +159,7 @@ async fn main() -> Result<()> {
             use_tls,
             inspect,
             no_inspect,
+            no_tui,
         } => {
             // Inspector is enabled by default on port 38227, unless --no-inspect is set
             let inspect_port = if no_inspect {
@@ -160,6 +167,9 @@ async fn main() -> Result<()> {
             } else {
                 Some(inspect.unwrap_or(38227))
             };
+
+            // TUI is enabled by default unless --no-tui or --detach is set
+            let tui_mode = !no_tui && !detach;
 
             let opts = commands::http::HttpOptions {
                 target,
@@ -169,6 +179,7 @@ async fn main() -> Result<()> {
                 detach,
                 use_tls,
                 inspect_port,
+                tui_mode,
             };
             commands::http::run(opts).await?;
         }

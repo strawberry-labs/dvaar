@@ -52,6 +52,8 @@ pub async fn start_server_with_upstream(
         .route("/api/requests/{id}", get(get_request))
         .route("/api/replay/{id}", post(replay_request))
         .route("/api/clear", post(clear_requests))
+        .route("/api/metrics", get(get_metrics))
+        .route("/api/info", get(get_info))
         .route("/ws", get(ws_handler))
         .with_state(state);
 
@@ -86,6 +88,16 @@ async fn get_request(
         Some(req) => Json(req).into_response(),
         None => (StatusCode::NOT_FOUND, "Request not found").into_response(),
     }
+}
+
+/// Get metrics snapshot
+async fn get_metrics(State(state): State<AppState>) -> Json<crate::metrics::MetricsSnapshot> {
+    Json(state.store.get_metrics().await)
+}
+
+/// Get tunnel info for status page
+async fn get_info(State(state): State<AppState>) -> Json<super::store::TunnelInfoData> {
+    Json(state.store.get_tunnel_info().await)
 }
 
 #[derive(Deserialize)]
