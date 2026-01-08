@@ -118,9 +118,9 @@ fn draw_tunnel_info(frame: &mut Frame, app: &TuiApp, area: Rect) {
     let local_addr = truncate_str(&app.tunnel_info.local_addr, 25);
     let inspector_str = truncate_str(inspector_str, max_url_len);
 
-    // Sponsor line text
+    // Sponsor line text - show full sponsor info
     let sponsor_text = app.current_ad()
-        .map(|a| format!("Sponsored by: {}", a.title))
+        .map(|a| format!("{} - {}", a.title, a.description))
         .unwrap_or_default();
 
     let lines = vec![
@@ -129,9 +129,10 @@ fn draw_tunnel_info(frame: &mut Frame, app: &TuiApp, area: Rect) {
             Span::styled("dvaar ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
             Span::styled(format!("(v{})", app.tunnel_info.version), Style::default().fg(Color::DarkGray)),
         ]),
+        // Empty line between version and sponsor
+        Line::from(""),
         // Sponsor line (below title, above status) in yellow
         Line::from(Span::styled(&sponsor_text, Style::default().fg(Color::Yellow))),
-        Line::from(""),
         Line::from(vec![
             Span::styled("Status    ", Style::default().fg(Color::DarkGray)),
             Span::styled(
@@ -208,35 +209,42 @@ fn draw_qr_code_scaled(frame: &mut Frame, app: &TuiApp, area: Rect) {
     frame.render_widget(paragraph, area);
 }
 
-/// Draw the metrics row (compact, responsive)
+/// Draw the metrics row (compact, responsive) - format: Connections ttl opn rt1 rt5 p50 p90
 fn draw_metrics_row(frame: &mut Frame, app: &TuiApp, area: Rect) {
     let m = &app.metrics;
     let width = area.width as usize;
 
-    // Build spans based on available width
+    // Format like: Connections     ttl    opn    rt1    rt5    p50    p90
+    //                              1      0      0.00   0.00   148.60 148.60
     let mut spans = vec![
-        Span::styled("Conn ", Style::default().fg(Color::DarkGray)),
-        Span::styled(format!("{}↓ ", m.total_requests), Style::default().fg(Color::White)),
-        Span::styled(format!("{}● ", m.open_connections), Style::default().fg(Color::Green)),
+        Span::styled("Connections", Style::default().fg(Color::DarkGray)),
     ];
 
-    // Add rate if we have space (width > 40)
-    if width > 40 {
+    // Always show ttl and opn
+    spans.extend([
+        Span::styled("  ttl ", Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("{:<4}", m.total_requests), Style::default().fg(Color::White)),
+        Span::styled("opn ", Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("{:<4}", m.open_connections), Style::default().fg(Color::Green)),
+    ]);
+
+    // Add rate columns if we have space (width > 50)
+    if width > 50 {
         spans.extend([
-            Span::styled("│ ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Rate ", Style::default().fg(Color::DarkGray)),
-            Span::styled(format!("{:.1}/m ", m.requests_per_minute_1m), Style::default().fg(Color::White)),
+            Span::styled("rt1 ", Style::default().fg(Color::DarkGray)),
+            Span::styled(format!("{:<6.2}", m.requests_per_minute_1m), Style::default().fg(Color::White)),
+            Span::styled("rt5 ", Style::default().fg(Color::DarkGray)),
+            Span::styled(format!("{:<6.2}", m.requests_per_minute_5m), Style::default().fg(Color::White)),
         ]);
     }
 
-    // Add percentiles if we have more space (width > 70)
-    if width > 70 {
+    // Add percentiles if we have more space (width > 80)
+    if width > 80 {
         spans.extend([
-            Span::styled("│ ", Style::default().fg(Color::DarkGray)),
-            Span::styled("p50:", Style::default().fg(Color::DarkGray)),
-            Span::styled(format!("{}ms ", m.p50_duration_ms), Style::default().fg(Color::White)),
-            Span::styled("p90:", Style::default().fg(Color::DarkGray)),
-            Span::styled(format!("{}ms", m.p90_duration_ms), Style::default().fg(Color::Yellow)),
+            Span::styled("p50 ", Style::default().fg(Color::DarkGray)),
+            Span::styled(format!("{:<6.2}", m.p50_duration_ms as f64), Style::default().fg(Color::White)),
+            Span::styled("p90 ", Style::default().fg(Color::DarkGray)),
+            Span::styled(format!("{:<6.2}", m.p90_duration_ms as f64), Style::default().fg(Color::Yellow)),
         ]);
     }
 
@@ -249,41 +257,41 @@ fn draw_recent_requests(frame: &mut Frame, app: &TuiApp, area: Rect) {
     let width = area.width as usize;
 
     // Responsive column layout based on terminal width
-    // Order: Status + Time + Method + Path + Duration
+    // Order: Status + Time + Duration + Method + Path (Path is always last)
     let (header_cells, constraints, row_builder): (Vec<&str>, Vec<Constraint>, Box<dyn Fn(&crate::inspector::CapturedRequest, usize) -> Vec<Cell>>) =
         if width >= 80 {
-            // Full layout: Status + Time + Method + Path + Duration
-            let path_width = width.saturating_sub(4 + 9 + 7 + 8 + 10).max(10);
+            // Full layout: Status + Time + Duration + Method + Path
+            let path_width = width.saturating_sub(6 + 9 + 10 + 7 + 10).max(10);
             (
-                vec!["Stat", "Time", "Method", "Path", "Dur"],
+                vec!["Status", "Time", "Duration", "Method", "Path"],
                 vec![
-                    Constraint::Length(4),
+                    Constraint::Length(6),
                     Constraint::Length(9),
+                    Constraint::Length(10),
                     Constraint::Length(7),
                     Constraint::Min(10),
-                    Constraint::Length(8),
                 ],
                 Box::new(move |req, _| vec![
-                    Cell::from(req.response_status.to_string()).style(status_style(req.response_status)),
+                    Cell::from(format!("{:>3}", req.response_status)).style(status_style(req.response_status)),
                     Cell::from(format_datetime(&req.timestamp)),
+                    Cell::from(format_duration_short(req.duration_ms)),
                     Cell::from(format!("{:>6}", truncate_str(&req.method, 6))).style(method_style(&req.method)),
                     Cell::from(truncate_path(&req.path, path_width)),
-                    Cell::from(format_duration_short(req.duration_ms)),
                 ])
             )
         } else if width >= 50 {
             // Compact layout: Status + Time + Method + Path
-            let path_width = width.saturating_sub(4 + 9 + 7 + 6).max(10);
+            let path_width = width.saturating_sub(6 + 9 + 7 + 6).max(10);
             (
-                vec!["Stat", "Time", "Method", "Path"],
+                vec!["Status", "Time", "Method", "Path"],
                 vec![
-                    Constraint::Length(4),
+                    Constraint::Length(6),
                     Constraint::Length(9),
                     Constraint::Length(7),
                     Constraint::Min(10),
                 ],
                 Box::new(move |req, _| vec![
-                    Cell::from(req.response_status.to_string()).style(status_style(req.response_status)),
+                    Cell::from(format!("{:>3}", req.response_status)).style(status_style(req.response_status)),
                     Cell::from(format_timestamp(&req.timestamp)),
                     Cell::from(format!("{:>6}", truncate_str(&req.method, 6))).style(method_style(&req.method)),
                     Cell::from(truncate_path(&req.path, path_width)),
@@ -291,16 +299,16 @@ fn draw_recent_requests(frame: &mut Frame, app: &TuiApp, area: Rect) {
             )
         } else {
             // Minimal layout: Status + Method + Path only
-            let path_width = width.saturating_sub(4 + 7 + 4).max(5);
+            let path_width = width.saturating_sub(6 + 7 + 4).max(5);
             (
-                vec!["Stat", "Method", "Path"],
+                vec!["Status", "Method", "Path"],
                 vec![
-                    Constraint::Length(4),
+                    Constraint::Length(6),
                     Constraint::Length(7),
                     Constraint::Min(5),
                 ],
                 Box::new(move |req, _| vec![
-                    Cell::from(req.response_status.to_string()).style(status_style(req.response_status)),
+                    Cell::from(format!("{:>3}", req.response_status)).style(status_style(req.response_status)),
                     Cell::from(format!("{:>6}", truncate_str(&req.method, 6))).style(method_style(&req.method)),
                     Cell::from(truncate_path(&req.path, path_width)),
                 ])
@@ -333,11 +341,11 @@ fn draw_recent_requests(frame: &mut Frame, app: &TuiApp, area: Rect) {
 /// Draw all requests with scrolling and scrollbar
 fn draw_all_requests(frame: &mut Frame, app: &TuiApp, area: Rect) {
     // Calculate available width for path column
-    // Order: Status + Time + Method + Path + Duration + Size
-    let fixed_width = 4 + 9 + 7 + 8 + 8 + 6; // status + time + method + duration + size + padding
+    // Order: Status + Time + Duration + Method + Path + Size
+    let fixed_width = 6 + 9 + 10 + 7 + 8 + 6; // status + time + duration + method + size + padding
     let path_width = (area.width as usize).saturating_sub(fixed_width).max(10);
 
-    let header = Row::new(vec!["Stat", "Time", "Method", "Path", "Dur", "Size"])
+    let header = Row::new(vec!["Status", "Time", "Duration", "Method", "Path", "Size"])
         .style(Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD))
         .bottom_margin(0);
 
@@ -355,11 +363,11 @@ fn draw_all_requests(frame: &mut Frame, app: &TuiApp, area: Rect) {
             };
 
             Row::new(vec![
-                Cell::from(req.response_status.to_string()).style(status_style),
+                Cell::from(format!("{:>3}", req.response_status)).style(status_style),
                 Cell::from(format_datetime(&req.timestamp)),
+                Cell::from(format_duration_short(req.duration_ms)),
                 Cell::from(format!("{:>6}", truncate_str(&req.method, 6))).style(method_style),
                 Cell::from(truncate_path(&req.path, path_width)),
-                Cell::from(format_duration_short(req.duration_ms)),
                 Cell::from(format_size_short(req.size_bytes)),
             ])
             .style(row_style)
@@ -375,11 +383,11 @@ fn draw_all_requests(frame: &mut Frame, app: &TuiApp, area: Rect) {
     let table = Table::new(
         rows,
         [
-            Constraint::Length(4),
+            Constraint::Length(6),
             Constraint::Length(9),
+            Constraint::Length(10),
             Constraint::Length(7),
             Constraint::Min(10),
-            Constraint::Length(8),
             Constraint::Length(8),
         ],
     )

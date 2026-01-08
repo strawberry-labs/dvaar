@@ -7,7 +7,7 @@ use bytes::Bytes;
 use chrono::Utc;
 use console::style;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event},
+    event::{self, Event},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -399,7 +399,7 @@ impl TunnelClient {
         // Setup terminal
         enable_raw_mode()?;
         let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+        execute!(stdout, EnterAlternateScreen)?;
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
 
@@ -425,8 +425,7 @@ impl TunnelClient {
         disable_raw_mode()?;
         execute!(
             terminal.backend_mut(),
-            LeaveAlternateScreen,
-            DisableMouseCapture
+            LeaveAlternateScreen
         )?;
         terminal.show_cursor()?;
 
@@ -1698,8 +1697,13 @@ async fn fetch_ads_from_server(server_url: &str) -> Vec<crate::tui::Ad> {
     // Return default ads if fetch fails
     vec![
         Ad {
+            title: "berrydesk.com".to_string(),
+            description: "ai agents for effortless customer support".to_string(),
+            url: "https://berrydesk.com".to_string(),
+        },
+        Ad {
             title: "berrycode.ai".to_string(),
-            description: "AI agents orchestration inspired by ralph wiggum methodology".to_string(),
+            description: "ai agent orchestration inspired by ralph wiggum".to_string(),
             url: "https://berrycode.ai".to_string(),
         },
     ]

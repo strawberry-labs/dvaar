@@ -15,6 +15,7 @@ use axum::{
 };
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
+use tokio::sync::broadcast;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::task::JoinHandle;
@@ -370,9 +371,21 @@ async fn handle_websocket(socket: WebSocket, state: AppState) {
 
     // Spawn task to forward events to WebSocket
     let send_task = tokio::spawn(async move {
-        while let Ok(event) = event_rx.recv().await {
-            if let Ok(json) = serde_json::to_string(&event) {
-                if sender.send(Message::Text(json.into())).await.is_err() {
+        loop {
+            match event_rx.recv().await {
+                Ok(event) => {
+                    if let Ok(json) = serde_json::to_string(&event) {
+                        if sender.send(Message::Text(json.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    // Receiver fell behind, skip missed messages and continue
+                    tracing::debug!("WebSocket client lagged, skipped {} messages", n);
+                    continue;
+                }
+                Err(broadcast::error::RecvError::Closed) => {
                     break;
                 }
             }

@@ -1,6 +1,7 @@
 //! Update checker - notifies users of new versions
 
 use anyhow::Result;
+use console::style;
 use serde::Deserialize;
 use std::time::Duration;
 
@@ -55,7 +56,7 @@ fn is_newer_version(latest: &str, current: &str) -> bool {
     false
 }
 
-/// Check for updates and print message if available
+/// Check for updates and prompt user if available
 /// Always checks GitHub releases API (fast, 5s timeout)
 pub async fn check_for_updates() {
     // Skip in CI or tests
@@ -65,7 +66,7 @@ pub async fn check_for_updates() {
 
     if let Ok(latest) = fetch_latest_version().await {
         if is_newer_version(&latest, CURRENT_VERSION) {
-            print_update_message(&latest);
+            prompt_for_update(&latest).await;
         }
     }
 }
@@ -81,22 +82,54 @@ pub async fn check_for_updates_blocking() -> Result<Option<String>> {
     }
 }
 
-/// Print update available message
-fn print_update_message(latest_version: &str) {
-    eprintln!();
-    eprintln!("\x1b[33m╭───────────────────────────────────────────────╮\x1b[0m");
-    eprintln!(
-        "\x1b[33m│\x1b[0m  A new version of dvaar is available: \x1b[32m{}\x1b[0m    \x1b[33m│\x1b[0m",
-        latest_version
+/// Prompt user to update or skip
+async fn prompt_for_update(latest_version: &str) {
+    use cliclack::{intro, select};
+
+    // Show update notice
+    let _ = intro(style(" Update Available ").on_yellow().black().to_string());
+
+    println!();
+    println!(
+        "  {} {}  →  {}",
+        style("dvaar").white().bold(),
+        style(CURRENT_VERSION).dim(),
+        style(latest_version).green().bold()
     );
-    eprintln!("\x1b[33m│\x1b[0m  You have: {}                                \x1b[33m│\x1b[0m", CURRENT_VERSION);
-    eprintln!("\x1b[33m│\x1b[0m                                               \x1b[33m│\x1b[0m");
-    eprintln!("\x1b[33m│\x1b[0m  Update with:  \x1b[36mdvaar update\x1b[0m                   \x1b[33m│\x1b[0m");
-    eprintln!("\x1b[33m│\x1b[0m                                               \x1b[33m│\x1b[0m");
-    eprintln!("\x1b[33m│\x1b[0m  Or reinstall:                                \x1b[33m│\x1b[0m");
-    eprintln!("\x1b[33m│\x1b[0m  \x1b[36mcurl -sSL https://dvaar.io/install.sh | bash\x1b[0m   \x1b[33m│\x1b[0m");
-    eprintln!("\x1b[33m╰───────────────────────────────────────────────╯\x1b[0m");
-    eprintln!();
+    println!();
+
+    let choice = select("What would you like to do?")
+        .item("update", "Update now", "Run dvaar update")
+        .item("skip", "Skip for now", "Continue without updating")
+        .interact();
+
+    match choice {
+        Ok("update") => {
+            println!();
+            // Run dvaar update command
+            let status = std::process::Command::new(std::env::current_exe().unwrap_or_else(|_| "dvaar".into()))
+                .arg("update")
+                .status();
+
+            match status {
+                Ok(s) if s.success() => {
+                    // Exit after successful update
+                    std::process::exit(0);
+                }
+                Ok(_) => {
+                    eprintln!("{}", style("Update failed. Continuing with current version...").yellow());
+                }
+                Err(e) => {
+                    eprintln!("{} {}", style("Could not run update:").red(), e);
+                }
+            }
+        }
+        Ok("skip") | Err(_) => {
+            // Continue without updating
+            println!();
+        }
+        _ => {}
+    }
 }
 
 #[cfg(test)]

@@ -136,12 +136,12 @@ pub async fn run(token: Option<String>) -> Result<()> {
     );
     note("One-Time Code", &code_display)?;
 
-    let should_open = confirm("Proceed to GitHub in your browser?")
-        .initial_value(true)
+    let should_open = confirm("Open GitHub in your browser?")
+        .initial_value(false)
         .interact()?;
 
     if should_open {
-        // Open browser
+        // Open browser only after user confirms
         if let Err(e) = open::that(&device_response.verification_uri) {
             cliclack::log::warning("Could not open browser automatically")?;
             cliclack::log::info(format!(
@@ -152,6 +152,11 @@ pub async fn run(token: Option<String>) -> Result<()> {
         } else {
             cliclack::log::success("Browser opened - paste your code there")?;
         }
+    } else {
+        cliclack::log::info(format!(
+            "Visit: {}",
+            hyperlink(&device_response.verification_uri, &device_response.verification_uri)
+        ))?;
     }
 
     // Step 3: Poll for access token

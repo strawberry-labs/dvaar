@@ -20,9 +20,9 @@ pub struct Ad {
 impl Default for Ad {
     fn default() -> Self {
         Self {
-            title: "berrycode.ai".to_string(),
-            description: "AI agents orchestration inspired by ralph wiggum methodology".to_string(),
-            url: "https://berrycode.ai".to_string(),
+            title: "berrydesk.com".to_string(),
+            description: "ai agents for effortless customer support".to_string(),
+            url: "https://berrydesk.com".to_string(),
         }
     }
 }
@@ -135,8 +135,13 @@ impl TuiApp {
         // Default ads (will be replaced by server fetch)
         let default_ads = vec![
             Ad {
+                title: "berrydesk.com".to_string(),
+                description: "AI agents for effortless customer support".to_string(),
+                url: "https://berrydesk.com".to_string(),
+            },
+            Ad {
                 title: "berrycode.ai".to_string(),
-                description: "AI agents orchestration inspired by ralph wiggum methodology".to_string(),
+                description: "AI agent orchestration inspired by ralph wiggum".to_string(),
                 url: "https://berrycode.ai".to_string(),
             },
         ];

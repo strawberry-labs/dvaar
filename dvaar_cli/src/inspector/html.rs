@@ -97,12 +97,14 @@ pub const INSPECTOR_HTML: &str = r#"<!DOCTYPE html>
         /* Left panel - request list */
         .request-list-panel {
             width: 45%;
-            min-width: 350px;
-            max-width: 600px;
+            min-width: 300px;
+            max-width: 700px;
             border-right: 1px solid #e0e0e0;
             display: flex;
             flex-direction: column;
             background: #fff;
+            resize: horizontal;
+            overflow: auto;
         }
 
         .list-header {
@@ -119,17 +121,23 @@ pub const INSPECTOR_HTML: &str = r#"<!DOCTYPE html>
             color: #666;
         }
 
+        .filter-container {
+            padding: 0.5rem 1rem;
+            background: #fff;
+            border-bottom: 1px solid #e0e0e0;
+        }
         .filter-input {
             width: 100%;
             padding: 0.5rem 0.75rem;
             border: 1px solid #e0e0e0;
             border-radius: 4px;
             font-size: 0.875rem;
-            margin: 0.5rem 1rem;
+            background: #fafafa;
         }
         .filter-input:focus {
             outline: none;
             border-color: #2563eb;
+            background: #fff;
         }
 
         .request-list {
@@ -471,10 +479,12 @@ pub const INSPECTOR_HTML: &str = r#"<!DOCTYPE html>
         <div class="inspect-container">
             <!-- Left: Request List -->
             <div class="request-list-panel">
-                <input type="text" class="filter-input" placeholder="Filter by path, method, or status..." id="filter-input" oninput="filterRequests()">
                 <div class="list-header">
                     <h2 id="request-count">All Requests</h2>
-                    <button onclick="clearRequests()" class="danger">Clear Requests</button>
+                    <button onclick="clearRequests()" class="danger">Clear</button>
+                </div>
+                <div class="filter-container">
+                    <input type="text" class="filter-input" placeholder="Filter by path, method, or status..." id="filter-input" oninput="filterRequests()">
                 </div>
                 <div class="request-list" id="request-list">
                     <div class="empty-state" id="empty-state">
@@ -676,13 +686,18 @@ pub const INSPECTOR_HTML: &str = r#"<!DOCTYPE html>
 
             ws.onmessage = (event) => {
                 const msg = JSON.parse(event.data);
+                console.log('WS message:', msg.type, msg.data?.length || msg.data?.id || '');
                 if (msg.type === 'requests') {
-                    requests = msg.data;
+                    requests = msg.data || [];
+                    console.log('Loaded', requests.length, 'initial requests');
                     renderRequests();
                 } else if (msg.type === 'request') {
-                    requests.push(msg.data);
-                    if (requests.length > 200) requests.shift();
-                    renderRequests();
+                    if (msg.data && msg.data.id) {
+                        requests.push(msg.data);
+                        if (requests.length > 200) requests.shift();
+                        console.log('New request:', msg.data.method, msg.data.path);
+                        renderRequests();
+                    }
                 } else if (msg.type === 'clear') {
                     if (!msg.data?.tunnel_id) requests = [];
                     else requests = requests.filter(r => r.tunnel_id !== msg.data.tunnel_id);
@@ -758,8 +773,12 @@ pub const INSPECTOR_HTML: &str = r#"<!DOCTYPE html>
         }
 
         function selectRequest(id) {
+            console.log('Selecting request:', id);
             selectedRequestId = id;
-            renderRequests();
+            // Update selection highlight immediately
+            document.querySelectorAll('.request-item').forEach(el => {
+                el.classList.toggle('selected', el.getAttribute('data-id') === id);
+            });
             renderDetails();
         }
 
@@ -802,7 +821,7 @@ pub const INSPECTOR_HTML: &str = r#"<!DOCTYPE html>
 
             emptyState.style.display = 'none';
             container.innerHTML = filtered.slice().reverse().map(req => `
-                <div class="request-item ${selectedRequestId === req.id ? 'selected' : ''}" onclick="selectRequest('${req.id}')">
+                <div class="request-item ${selectedRequestId === req.id ? 'selected' : ''}" data-id="${req.id}" onclick="selectRequest('${req.id}')">
                     <span class="method ${req.method}">${req.method}</span>
                     <span class="request-path" title="${req.path}">${req.path}</span>
                     <div class="request-meta">
@@ -811,6 +830,7 @@ pub const INSPECTOR_HTML: &str = r#"<!DOCTYPE html>
                     </div>
                 </div>
             `).join('');
+            console.log('Rendered', filtered.length, 'requests');
         }
 
         function renderDetails() {
