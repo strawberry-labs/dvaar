@@ -486,12 +486,7 @@ pub const INSPECTOR_HTML: &str = r#"<!DOCTYPE html>
                 <div class="filter-container">
                     <input type="text" class="filter-input" placeholder="Filter by path, method, or status..." id="filter-input" oninput="filterRequests()">
                 </div>
-                <div class="request-list" id="request-list">
-                    <div class="empty-state" id="empty-state">
-                        <p>No requests captured yet</p>
-                        <p style="font-size: 0.8rem; margin-top: 0.5rem;">Requests through your tunnel will appear here</p>
-                    </div>
-                </div>
+                <div class="request-list" id="request-list"></div>
             </div>
 
             <!-- Right: Request Details -->
@@ -586,9 +581,12 @@ pub const INSPECTOR_HTML: &str = r#"<!DOCTYPE html>
         }
 
         function getFilteredRequests() {
-            let filtered = selectedTunnelId
-                ? requests.filter(r => r.tunnel_id === selectedTunnelId)
-                : requests;
+            // Always create a copy to avoid mutation issues
+            let filtered = [...requests];
+
+            if (selectedTunnelId) {
+                filtered = filtered.filter(r => r.tunnel_id === selectedTunnelId);
+            }
 
             if (filterText) {
                 const search = filterText.toLowerCase();
@@ -804,7 +802,6 @@ pub const INSPECTOR_HTML: &str = r#"<!DOCTYPE html>
 
         function renderRequests() {
             const container = document.getElementById('request-list');
-            const emptyState = document.getElementById('empty-state');
             const countEl = document.getElementById('request-count');
             const filtered = getFilteredRequests();
 
@@ -813,24 +810,33 @@ pub const INSPECTOR_HTML: &str = r#"<!DOCTYPE html>
             countEl.textContent = `${filtered.length} request${filtered.length !== 1 ? 's' : ''}${suffix}`;
 
             if (filtered.length === 0) {
-                container.innerHTML = '';
-                container.appendChild(emptyState);
-                emptyState.style.display = 'block';
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <p>No requests captured yet</p>
+                        <p style="font-size: 0.8rem; margin-top: 0.5rem;">Requests through your tunnel will appear here</p>
+                    </div>
+                `;
                 return;
             }
 
-            emptyState.style.display = 'none';
-            container.innerHTML = filtered.slice().reverse().map(req => `
-                <div class="request-item ${selectedRequestId === req.id ? 'selected' : ''}" data-id="${req.id}" onclick="selectRequest('${req.id}')">
-                    <span class="method ${req.method}">${req.method}</span>
-                    <span class="request-path" title="${req.path}">${req.path}</span>
-                    <div class="request-meta">
-                        <span class="request-status ${getStatusClass(req.response_status)}">${req.response_status}</span>
-                        <span>${formatDuration(req.duration_ms)}</span>
+            // Build HTML for all requests (newest first)
+            const html = filtered
+                .slice()
+                .reverse()
+                .map(req => `
+                    <div class="request-item ${selectedRequestId === req.id ? 'selected' : ''}" data-id="${req.id}" onclick="selectRequest('${req.id}')">
+                        <span class="method ${req.method}">${req.method}</span>
+                        <span class="request-path" title="${req.path}">${req.path}</span>
+                        <div class="request-meta">
+                            <span class="request-status ${getStatusClass(req.response_status)}">${req.response_status}</span>
+                            <span>${formatDuration(req.duration_ms)}</span>
+                        </div>
                     </div>
-                </div>
-            `).join('');
-            console.log('Rendered', filtered.length, 'requests');
+                `)
+                .join('');
+
+            container.innerHTML = html;
+            console.log('Rendered', filtered.length, 'requests, HTML length:', html.length);
         }
 
         function renderDetails() {
@@ -879,7 +885,7 @@ pub const INSPECTOR_HTML: &str = r#"<!DOCTYPE html>
                 <!-- Request Section -->
                 <div class="section">
                     <div class="section-header request-section">
-                        <span>${req.method} ${req.path}</span>
+                        <span>Request - ${req.method} ${req.path}</span>
                     </div>
                     <div class="section-tabs" id="req-tabs">
                         <button class="section-tab active" onclick="showSection('req', 'headers')">Headers</button>
@@ -900,7 +906,7 @@ pub const INSPECTOR_HTML: &str = r#"<!DOCTYPE html>
                 <!-- Response Section -->
                 <div class="section">
                     <div class="section-header response-section">
-                        <span>${req.response_status} ${getStatusText(req.response_status)}</span>
+                        <span>Response - ${req.response_status} ${getStatusText(req.response_status)}</span>
                     </div>
                     <div class="section-tabs" id="res-tabs">
                         <button class="section-tab active" onclick="showSection('res', 'headers')">Headers</button>

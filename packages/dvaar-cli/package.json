@@ -1,6 +1,6 @@
 {
   "name": "dvaar",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "Fast, secure tunneling for developers. Expose localhost to the internet with custom subdomains and HTTPS. Drop-in replacement for ngrok.",
   "keywords": [
     "tunnel",

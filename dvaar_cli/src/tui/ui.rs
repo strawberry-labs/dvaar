@@ -19,17 +19,21 @@ pub fn draw(frame: &mut Frame, app: &TuiApp) {
 
 /// Draw the main view with tunnel info, metrics, and recent requests
 fn draw_main_view(frame: &mut Frame, app: &TuiApp) {
+    // Calculate QR height to determine header height
+    let qr_height = app.qr_code_lines.len().min(12) as u16;
+    let header_height = qr_height.max(8) + 2; // +2 for borders
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(9),  // Header with title + sponsor + tunnel info + QR code
+            Constraint::Length(header_height),  // Header with title + sponsor + tunnel info + QR code
             Constraint::Length(1),  // Metrics row
             Constraint::Min(5),     // Request table
             Constraint::Length(1),  // Footer
         ])
         .split(frame.area());
 
-    draw_header_with_qr(frame, app, chunks[0]);
+    draw_unified_header(frame, app, chunks[0]);
     draw_metrics_row(frame, app, chunks[1]);
     draw_recent_requests(frame, app, chunks[2]);
     draw_footer_simple(frame, chunks[3]);
@@ -49,43 +53,8 @@ fn draw_request_list_view(frame: &mut Frame, app: &TuiApp) {
     draw_footer_nav(frame, chunks[1]);
 }
 
-/// Draw the header with tunnel info and QR code on the right (responsive sizing)
-fn draw_header_with_qr(frame: &mut Frame, app: &TuiApp, area: Rect) {
-    let qr_natural_width = app.qr_code_lines.first().map(|l| l.chars().count()).unwrap_or(0) as u16;
-
-    // Don't show QR if empty or terminal is very narrow
-    if qr_natural_width == 0 || area.width < 60 {
-        draw_tunnel_info(frame, app, area);
-        return;
-    }
-
-    // Calculate available space for QR code (reserve at least 45 cols for tunnel info)
-    let min_info_width = 45u16;
-    let available_for_qr = area.width.saturating_sub(min_info_width);
-
-    // Scale QR code to fit: use full size, or shrink if needed
-    let qr_width = (qr_natural_width + 2).min(available_for_qr).min(35);
-
-    if qr_width < 15 {
-        // Too narrow for a useful QR code
-        draw_tunnel_info(frame, app, area);
-        return;
-    }
-
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Min(min_info_width),  // Left: tunnel info
-            Constraint::Length(qr_width),      // Right: QR code (scaled)
-        ])
-        .split(area);
-
-    draw_tunnel_info(frame, app, chunks[0]);
-    draw_qr_code_scaled(frame, app, chunks[1]);
-}
-
-/// Draw tunnel info on the left side with title
-fn draw_tunnel_info(frame: &mut Frame, app: &TuiApp, area: Rect) {
+/// Draw unified header with tunnel info on left, QR code on right, all in one box
+fn draw_unified_header(frame: &mut Frame, app: &TuiApp, area: Rect) {
     let status_color = match app.tunnel_info.status {
         TunnelStatus::Online => Color::Green,
         TunnelStatus::Connecting => Color::Yellow,
@@ -112,27 +81,59 @@ fn draw_tunnel_info(frame: &mut Frame, app: &TuiApp, area: Rect) {
         .as_deref()
         .unwrap_or("disabled");
 
-    // Truncate URLs to fit
-    let max_url_len = (area.width as usize).saturating_sub(18);
+    // Create the outer block
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(ratatui::widgets::BorderType::Rounded)
+        .border_style(Style::default().fg(Color::DarkGray));
+
+    frame.render_widget(block, area);
+
+    // Inner area after borders
+    let inner = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+
+    // Calculate QR code dimensions
+    let qr_natural_width = app.qr_code_lines.first().map(|l| l.chars().count()).unwrap_or(0) as u16;
+    let show_qr = qr_natural_width > 0 && inner.width >= 60;
+
+    let (info_area, qr_area) = if show_qr {
+        let qr_width = qr_natural_width.min(inner.width / 3).min(30);
+        let info_width = inner.width.saturating_sub(qr_width + 1);
+        (
+            Rect { x: inner.x, y: inner.y, width: info_width, height: inner.height },
+            Some(Rect { x: inner.x + info_width, y: inner.y, width: qr_width + 1, height: inner.height }),
+        )
+    } else {
+        (inner, None)
+    };
+
+    // Truncate URLs to fit info area
+    let max_url_len = (info_area.width as usize).saturating_sub(14);
     let public_url = truncate_str(&app.tunnel_info.public_url, max_url_len);
     let local_addr = truncate_str(&app.tunnel_info.local_addr, 25);
     let inspector_str = truncate_str(inspector_str, max_url_len);
 
-    // Sponsor line text - show full sponsor info
+    // Sponsor line text
     let sponsor_text = app.current_ad()
         .map(|a| format!("{} - {}", a.title, a.description))
         .unwrap_or_default();
 
-    let lines = vec![
+    let info_lines = vec![
         // Title line: dvaar (bold white) + version (grey in brackets)
         Line::from(vec![
             Span::styled("dvaar ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
             Span::styled(format!("(v{})", app.tunnel_info.version), Style::default().fg(Color::DarkGray)),
         ]),
-        // Empty line between version and sponsor
-        Line::from(""),
-        // Sponsor line (below title, above status) in yellow
+        // Sponsor line in yellow
         Line::from(Span::styled(&sponsor_text, Style::default().fg(Color::Yellow))),
+        // Empty line after sponsor
+        Line::from(""),
+        // Status line
         Line::from(vec![
             Span::styled("Status    ", Style::default().fg(Color::DarkGray)),
             Span::styled(
@@ -146,67 +147,62 @@ fn draw_tunnel_info(frame: &mut Frame, app: &TuiApp, area: Rect) {
             Span::styled("Account ", Style::default().fg(Color::DarkGray)),
             Span::styled(&user_str, Style::default().fg(Color::White)),
         ]),
+        // Forwarding line
         Line::from(vec![
             Span::styled("Forwarding  ", Style::default().fg(Color::DarkGray)),
             Span::styled(&public_url, Style::default().fg(Color::Green)),
             Span::styled(" → ", Style::default().fg(Color::DarkGray)),
             Span::styled(&local_addr, Style::default().fg(Color::Cyan)),
         ]),
+        // Inspector line
         Line::from(vec![
             Span::styled("Inspector   ", Style::default().fg(Color::DarkGray)),
             Span::styled(&inspector_str, Style::default().fg(Color::Magenta)),
         ]),
     ];
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(ratatui::widgets::BorderType::Rounded)
-        .border_style(Style::default().fg(Color::DarkGray));
+    let info_paragraph = Paragraph::new(info_lines);
+    frame.render_widget(info_paragraph, info_area);
 
-    let paragraph = Paragraph::new(lines).block(block);
-    frame.render_widget(paragraph, area);
-}
+    // Draw QR code if space available
+    if let Some(qr_rect) = qr_area {
+        let available_height = qr_rect.height as usize;
+        let available_width = qr_rect.width.saturating_sub(1) as usize;
+        let qr_natural_width = app.qr_code_lines.first().map(|l| l.chars().count()).unwrap_or(0);
 
-/// Draw QR code on the right side, scaled to fit available space
-fn draw_qr_code_scaled(frame: &mut Frame, app: &TuiApp, area: Rect) {
-    // Available space for QR (accounting for border)
-    let available_width = area.width.saturating_sub(2) as usize;
-    let available_height = area.height.saturating_sub(1) as usize;
+        // Calculate scale factor
+        let scale = if qr_natural_width <= available_width {
+            1
+        } else if qr_natural_width <= available_width * 2 {
+            2
+        } else {
+            3
+        };
 
-    let qr_natural_width = app.qr_code_lines.first().map(|l| l.chars().count()).unwrap_or(0);
+        let qr_lines: Vec<Line> = app
+            .qr_code_lines
+            .iter()
+            .step_by(scale)
+            .take(available_height)
+            .map(|line| {
+                let scaled: String = line.chars()
+                    .enumerate()
+                    .filter(|(i, _)| i % scale == 0)
+                    .map(|(_, c)| c)
+                    .take(available_width)
+                    .collect();
+                Line::from(Span::styled(scaled, Style::default().fg(Color::White).bg(Color::Black)))
+            })
+            .collect();
 
-    // Calculate scale factor (1 = full size, 2 = half size, etc.)
-    let scale = if qr_natural_width <= available_width {
-        1 // Full size fits
-    } else if qr_natural_width <= available_width * 2 {
-        2 // Half size
-    } else {
-        3 // Third size (minimum)
-    };
-
-    let qr_lines: Vec<Line> = app
-        .qr_code_lines
-        .iter()
-        .step_by(scale) // Skip rows to scale vertically
-        .take(available_height)
-        .map(|line| {
-            // Scale horizontally by taking every Nth character
-            let scaled: String = line.chars()
-                .enumerate()
-                .filter(|(i, _)| i % scale == 0)
-                .map(|(_, c)| c)
-                .take(available_width)
-                .collect();
-            Line::from(Span::styled(scaled, Style::default().fg(Color::White).bg(Color::Black)))
-        })
-        .collect();
-
-    let block = Block::default()
-        .borders(Borders::LEFT | Borders::BOTTOM)
-        .border_style(Style::default().fg(Color::DarkGray));
-
-    let paragraph = Paragraph::new(qr_lines).block(block);
-    frame.render_widget(paragraph, area);
+        let qr_paragraph = Paragraph::new(qr_lines);
+        frame.render_widget(qr_paragraph, Rect {
+            x: qr_rect.x + 1,
+            y: qr_rect.y,
+            width: qr_rect.width.saturating_sub(1),
+            height: qr_rect.height,
+        });
+    }
 }
 
 /// Draw the metrics row (compact, responsive) - format: Connections ttl opn rt1 rt5 p50 p90

@@ -49,14 +49,14 @@ pub struct Ad {
 fn default_ads() -> Vec<Ad> {
     vec![
         Ad {
-            title: "Berry.me".to_string(),
-            description: "AI assistant that does tasks for you".to_string(),
-            url: "https://berry.me".to_string(),
+            title: "berrydesk.com".to_string(),
+            description: "AI agents for effortless customer support".to_string(),
+            url: "https://berrydesk.com".to_string(),
         },
         Ad {
-            title: "Ralfie.ai".to_string(),
-            description: "Open source AI agent orchestration".to_string(),
-            url: "https://ralfie.ai".to_string(),
+            title: "berrycode.ai".to_string(),
+            description: "AI agent orchestration inspired by ralph wiggum".to_string(),
+            url: "https://berrycode.ai".to_string(),
         },
     ]
 }
