@@ -5,7 +5,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table, TableState},
+    widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table, TableState},
     Frame,
 };
 
@@ -79,11 +79,15 @@ fn draw_unified_header(frame: &mut Frame, app: &TuiApp, area: Rect) {
         .as_deref()
         .unwrap_or("disabled");
 
-    // Create the outer block
+    // Clear the area first to prevent content bleed-through
+    frame.render_widget(Clear, area);
+
+    // Create the outer block with explicit style to ensure interior is cleared
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(ratatui::widgets::BorderType::Rounded)
-        .border_style(Style::default().fg(Color::DarkGray));
+        .border_style(Style::default().fg(Color::DarkGray))
+        .style(Style::default()); // Ensures interior is cleared
 
     frame.render_widget(block, area);
 
@@ -116,9 +120,9 @@ fn draw_unified_header(frame: &mut Frame, app: &TuiApp, area: Rect) {
     let local_addr = truncate_str(&app.tunnel_info.local_addr, 25);
     let inspector_str = truncate_str(inspector_str, max_url_len);
 
-    // Sponsor line - get title and description separately
-    let (sponsor_title, sponsor_desc) = app.current_ad()
-        .map(|a| (a.title.clone(), a.description.clone()))
+    // Sponsor line - get URL and description (URL for clickable link)
+    let (sponsor_url, sponsor_desc) = app.current_ad()
+        .map(|a| (a.url.clone(), a.description.clone()))
         .unwrap_or_default();
 
     // DVAAR logo using half-block characters (2 rows tall)
@@ -135,10 +139,10 @@ fn draw_unified_header(frame: &mut Frame, app: &TuiApp, area: Rect) {
         Line::from(Span::styled("█▄▀ ▀▄▀ █▀█ █▀█ █▀▄", logo_style)),
         // Empty line after logo
         Line::from(""),
-        // Sponsor line with "Sponsored by:" prefix, only title is underlined
+        // Sponsor line with "Sponsored by:" prefix, URL is underlined for Cmd+click
         Line::from(vec![
             Span::styled("Sponsored by: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(&sponsor_title, Style::default().fg(Color::Yellow).add_modifier(Modifier::UNDERLINED)),
+            Span::styled(&sponsor_url, Style::default().fg(Color::Yellow).add_modifier(Modifier::UNDERLINED)),
             Span::styled(" - ", Style::default().fg(Color::DarkGray)),
             Span::styled(&sponsor_desc, Style::default().fg(Color::Yellow)),
         ]),
@@ -193,11 +197,14 @@ fn draw_unified_header(frame: &mut Frame, app: &TuiApp, area: Rect) {
         },
     ];
 
+    // Clear info area and render paragraph
+    frame.render_widget(Clear, info_area);
     let info_paragraph = Paragraph::new(info_lines);
     frame.render_widget(info_paragraph, info_area);
 
     // Draw QR code if space available
     if let Some(qr_rect) = qr_area {
+        frame.render_widget(Clear, qr_rect);
         let available_height = qr_rect.height as usize;
         let available_width = qr_rect.width.saturating_sub(1) as usize;
         let qr_natural_width = app.qr_code_lines.first().map(|l| l.chars().count()).unwrap_or(0);
@@ -317,9 +324,12 @@ fn draw_recent_requests(frame: &mut Frame, app: &TuiApp, area: Rect) {
             Block::default()
                 .title(" HTTP Requests ")
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray)),
+                .border_style(Style::default().fg(Color::DarkGray))
+                .style(Style::default()), // Ensures interior is cleared
         );
 
+    // Clear area first to prevent bleed-through
+    frame.render_widget(Clear, area);
     frame.render_widget(table, area);
 }
 
