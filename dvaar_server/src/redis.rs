@@ -297,9 +297,9 @@ impl RouteManager {
             return Ok((new_count.saturating_sub(1) as u32, false));
         }
 
-        // Set long TTL - will be refreshed by heartbeat
-        // Using 24 hours as fallback in case heartbeat fails
-        self.client.expire::<(), _>(&key, 24 * 60 * 60, None).await?;
+        // Set short TTL - heartbeat (30s) keeps it alive
+        // If tunnel dies without cleanup, count auto-expires in ~2 min
+        self.client.expire::<(), _>(&key, constants::USER_TUNNELS_TTL_SECONDS, None).await?;
 
         Ok((new_count as u32, true))
     }
@@ -318,8 +318,8 @@ impl RouteManager {
     /// Refresh TTL on user tunnel count (called during heartbeat)
     pub async fn refresh_user_tunnels_ttl(&self, user_id: &str) -> anyhow::Result<()> {
         let key = format!("{}{}", constants::USER_TUNNELS_PREFIX, user_id);
-        // Refresh to 24 hours - heartbeat runs every 30s so this keeps it alive
-        self.client.expire::<(), _>(&key, 24 * 60 * 60, None).await?;
+        // Refresh TTL - heartbeat runs every 30s so this keeps it alive
+        self.client.expire::<(), _>(&key, constants::USER_TUNNELS_TTL_SECONDS, None).await?;
         Ok(())
     }
 }

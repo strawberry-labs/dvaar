@@ -270,6 +270,10 @@ pub mod constants {
 
     /// Redis key prefix for user tunnel count
     pub const USER_TUNNELS_PREFIX: &str = "user_tunnels:";
+
+    /// TTL for user tunnel count (seconds) - short TTL ensures stale counts auto-expire
+    /// Heartbeat (30s) keeps it alive; if tunnel dies without cleanup, expires in ~1 min
+    pub const USER_TUNNELS_TTL_SECONDS: i64 = 60;
 }
 
 #[cfg(test)]

@@ -106,9 +106,10 @@ async fn prompt_for_update(latest_version: &str) {
     match choice {
         Ok("update") => {
             println!();
-            // Run dvaar update command
+            // Run dvaar update command with DVAAR_NO_UPDATE_CHECK to prevent infinite loop
             let status = std::process::Command::new(std::env::current_exe().unwrap_or_else(|_| "dvaar".into()))
                 .arg("update")
+                .env("DVAAR_NO_UPDATE_CHECK", "1")
                 .status();
 
             match status {
