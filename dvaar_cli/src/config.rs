@@ -55,6 +55,14 @@ pub struct Config {
     /// Authentication token
     pub authtoken: Option<String>,
 
+    /// User email (from login)
+    #[serde(default)]
+    pub user_email: Option<String>,
+
+    /// User plan (e.g., "Free", "Pro")
+    #[serde(default)]
+    pub user_plan: Option<String>,
+
     /// Server URL (default: https://api.dvaar.io)
     #[serde(default = "default_server_url")]
     pub server_url: String,
@@ -68,6 +76,8 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             authtoken: None,
+            user_email: None,
+            user_plan: None,
             server_url: default_server_url(),
         }
     }
@@ -112,6 +122,12 @@ impl Config {
     /// Set auth token
     pub fn set_token(&mut self, token: String) {
         self.authtoken = Some(token);
+    }
+
+    /// Set user info (email and plan)
+    pub fn set_user_info(&mut self, email: Option<String>, plan: Option<String>) {
+        self.user_email = email;
+        self.user_plan = plan;
     }
 
     /// Get WebSocket URL from server URL

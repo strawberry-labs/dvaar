@@ -166,8 +166,9 @@ pub async fn run(token: Option<String>) -> Result<()> {
     let dvaar_response = exchange_for_dvaar_token(&client, &config, &github_token).await?;
     spinner.stop("Account ready");
 
-    // Step 5: Save token
+    // Step 5: Save token and user info
     config.set_token(dvaar_response.token);
+    config.set_user_info(Some(dvaar_response.user.email.clone()), Some("Free".to_string()));
     config.save()?;
 
     cliclack::log::success(format!("Logged in as {}", style(&dvaar_response.user.email).green()))?;

@@ -43,6 +43,8 @@ pub struct TunnelClient {
     inspector: Option<Arc<RequestStore>>,
     inspector_client: Option<Arc<InspectorClient>>,
     tunnel_id: Option<String>,
+    user_email: Option<String>,
+    user_plan: Option<String>,
 }
 
 /// Active WebSocket connection to local server
@@ -80,7 +82,14 @@ impl TunnelClient {
             inspector: None,
             inspector_client: None,
             tunnel_id: None,
+            user_email: None,
+            user_plan: None,
         }
+    }
+
+    pub fn set_user_info(&mut self, email: Option<String>, plan: Option<String>) {
+        self.user_email = email;
+        self.user_plan = plan;
     }
 
     pub fn set_basic_auth(&mut self, auth: &str) {
@@ -381,8 +390,8 @@ impl TunnelClient {
             local_addr,
             inspector_url,
             status: TunnelStatus::Online,
-            user_email: None, // TODO: Get from server when available
-            user_plan: None,  // TODO: Get from server when available
+            user_email: self.user_email.clone(),
+            user_plan: self.user_plan.clone(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             latency_ms: Some(latency_ms),
         };
@@ -1689,14 +1698,9 @@ async fn fetch_ads_from_server(server_url: &str) -> Vec<crate::tui::Ad> {
     // Return default ads if fetch fails
     vec![
         Ad {
-            title: "Berry.me".to_string(),
-            description: "AI assistant that does tasks for you".to_string(),
-            url: "https://berry.me".to_string(),
-        },
-        Ad {
-            title: "Ralfie.ai".to_string(),
-            description: "Open source AI agent orchestration".to_string(),
-            url: "https://ralfie.ai".to_string(),
+            title: "berrycode.ai".to_string(),
+            description: "AI agents orchestration inspired by ralph wiggum methodology".to_string(),
+            url: "https://berrycode.ai".to_string(),
         },
     ]
 }

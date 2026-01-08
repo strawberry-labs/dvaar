@@ -96,6 +96,9 @@ pub async fn run(opts: HttpOptions) -> Result<()> {
         actual_target.clone(),
     );
 
+    // Set user info from config
+    client.set_user_info(config.user_email.clone(), config.user_plan.clone());
+
     // Handle basic auth if provided
     if let Some(auth) = &opts.auth {
         client.set_basic_auth(auth);
